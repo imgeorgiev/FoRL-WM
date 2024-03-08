@@ -14,8 +14,8 @@ Applications:
 
 Tested only on Ubuntu 22.04. Requires Python, conda and an Nvidia GPU with >12GB VRAM.
 
-1. `git clone git@github.com:pairlab/FoRL.git`
-2. `cd FoRL`
+1. `git clone --recursive git@github.com:pairlab/FoRL.git`
+2. `cd FoWM`
 3. `conda env create -f environment.yaml`
 4. `ln -s $CONDA_PREFIX/lib $CONDA_PREFIX/lib64` (hack to get CUDA to work inside conda)
 5. `pip install -e .`
@@ -54,10 +54,3 @@ We try to comply with the normnal [gym interface](https://www.gymlibrary.dev/api
 
 * [Short Horizon Actor Critic (SHAC)](https://short-horizon-actor-critic.github.io/)
 
-## TODOs
-
-- [x] Upgrade python version
-- [ ] Think about simplified gym interface that is compatible with rl_games
-- [ ] More dflex examples
-- [ ] Add warp support
-- [ ] Add AHAC algorithm
