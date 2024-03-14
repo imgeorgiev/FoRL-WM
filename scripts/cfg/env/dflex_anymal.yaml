@@ -1,23 +1,25 @@
 config:
-  _target_: dflex.envs.AntEnv
+  _target_: dflex.envs.AnymalEnv
   render: ${general.render}
   device: ${general.device}
-  num_envs: 128
+  num_envs: 64
   stochastic_init: True
   no_grad: False
   episode_length: 1000
   MM_caching_frequency: 16
   early_termination: True
-  termination_height: 0.27
-  action_penalty: 0.0
-  joint_vel_obs_scaling: 0.1
+  nan_state_fix: True
+  termination_height: 0.25
+  action_penalty: -5e-3
   up_rew_scale: 0.1
+  heading_rew_scale: 1.0
+  heigh_rew_scale: 1.0
 
 shac:
   actor_lr: 2e-3
   critic_lr: 5e-4
-  max_epochs: 2000
-  save_interval: 400
+  max_epochs: 3000
+  save_interval: 500
   actor_mlp:
     units: [400, 200, 100]
   critic_mlp:
