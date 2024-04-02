@@ -53,4 +53,10 @@ We try to comply with the normnal [gym interface](https://www.gymlibrary.dev/api
 ## Current algorithms
 
 * [Short Horizon Actor Critic (SHAC)](https://short-horizon-actor-critic.github.io/)
+* [Adaptive Horizon Actor Critic (SHAC)](https://adaptive-horizon-actor-critic.github.io/)
+
+
+## Notes
+
+- Due to the nature of GPU acceleration, it is impossible to currently impossible to guarantee deterministic experiments. You can make them "less random" by using `seeding(seed, True)` but that slows down GPUs.
 

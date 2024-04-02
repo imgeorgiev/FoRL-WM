@@ -1,4 +1,5 @@
 import os, time, copy
+from collections import deque
 from tensorboardX import SummaryWriter
 from omegaconf import DictConfig
 from hydra.utils import instantiate
@@ -6,8 +7,6 @@ from typing import Optional, List, Tuple
 import torch
 from torch.nn.utils.clip_grad import clip_grad_norm_
 from gym import Env
-import tensordict
-from tensordict import TensorDict
 
 from forl.utils.common import *
 import forl.utils.torch_utils as tu
@@ -17,14 +16,10 @@ from forl.utils.time_report import TimeReport
 from forl.utils.average_meter import AverageMeter
 from forl.models.model_utils import Ensemble
 
-tensordict.set_lazy_legacy(False).set()
 
-
-class SHAC:
+class AHAC:
     """
-    Short Horizon Actor Critic (SHAC) algorithm based on the paper
-    Xu et al. Accelerated Policy Learning with Parallel Differentiable Simulation
-    https://arxiv.org/abs/2204.07137
+    Adaptive Horizon Actor Critic (AHAC) algorithm
     """
 
     def __init__(
@@ -32,36 +27,37 @@ class SHAC:
         env: Env,
         actor_config: DictConfig,
         critic_config: DictConfig,
-        horizon: int,  # horizon for short rollouts
         max_epochs: int,  # number of short rollouts to do (i.e. epochs)
         logdir: str,
+        horizon_min: int = 4,
+        horizon_max: int = 64,
         actor_grad_norm: Optional[float] = None,  # clip grad norms during training
         critic_grad_norm: Optional[float] = None,  # clip grad norms during training
         num_critics: int = 3,  # for critic ensembling
         actor_lr: float = 2e-3,
         critic_lr: float = 2e-3,
+        h_lr: float = 2e-3,
         betas: Tuple[float, float] = (0.7, 0.95),
         lr_schedule: str = "linear",
         gamma: float = 0.99,  # discount factor
         lam: float = 0.95,  # for TD(lambda)
         obs_rms: bool = False,  # running normalization of observations
         ret_rms: bool = False,  # running normalization of returns
-        critic_iterations: int = 16,
         critic_batches: int = 4,
         critic_method: str = "td-lambda",
         save_interval: int = 500,  # how often to save policy
         device: str = "cuda",
-        save_data: bool = False,
     ):
         # sanity check parameters
-        assert horizon > 0
+        assert horizon_min > 0
+        assert horizon_max > 0
         assert max_epochs >= 0
         assert actor_lr >= 0
         assert critic_lr >= 0
+        assert h_lr >= 0
         assert lr_schedule in ["linear", "constant"]
         assert 0 < gamma <= 1
         assert 0 < lam <= 1
-        assert critic_iterations > 0
         assert critic_batches > 0
         assert critic_method in ["one-step", "td-lambda"]
         assert save_interval > 0
@@ -71,23 +67,22 @@ class SHAC:
         self.num_obs = self.env.observation_space.shape[0]
         self.num_actions = self.env.action_space.shape[0]
         self.device = torch.device(device)
-        self.save_data = save_data
-        if save_data:
-            self.episode_data = []
-            if env.early_termination:
-                raise RuntimeError("Environment should not have early_termination=True")
 
-        self.horizon = horizon
+        self.horizon_min = horizon_min
+        self.horizon_max = horizon_max
+        self.H = torch.tensor(horizon_min, dtype=torch.float32, device=self.device)
+        self.lambd = torch.tensor([0.0], dtype=torch.float32, device=self.device)
         self.max_epochs = max_epochs
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
+        self.h_lr = h_lr
+        self.lambd_lr = 1e-4
         self.lr_schedule = lr_schedule
         self.gamma = gamma
         self.lam = lam
 
         self.critic_method = critic_method
-        self.critic_iterations = critic_iterations
-        self.critic_batch_size = self.num_envs * self.horizon // critic_batches
+        self.critic_batches = critic_batches
 
         self.obs_rms = None
         if obs_rms:
@@ -97,8 +92,8 @@ class SHAC:
         if ret_rms:
             self.ret_rms = RunningMeanStd(shape=(1,), device=self.device)
 
-        self.env_name = self.env.__class__.__name__
-        self.name = self.__class__.__name__ + "_" + self.env_name
+        env_name = self.env.__class__.__name__
+        self.name = self.__class__.__name__ + "_" + env_name
 
         self.actor_grad_norm = actor_grad_norm
         self.critic_grad_norm = critic_grad_norm
@@ -155,6 +150,9 @@ class SHAC:
             (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
         )
         self.ret = torch.zeros((self.num_envs), dtype=torch.float32, device=self.device)
+        self.cfs = torch.zeros(
+            (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+        )
 
         # counting variables
         self.iter_count = 0
@@ -201,13 +199,21 @@ class SHAC:
     def mean_horizon(self):
         return self.horizon_length_meter.get_mean()
 
+    @property
+    def horizon(self):
+        return round(self.H.item())
+
     def compute_actor_loss(self, deterministic=False):
         rew_acc = torch.zeros(
-            (self.horizon + 1, self.num_envs), dtype=torch.float32, device=self.device
+            (self.horizon + 1, self.num_envs),
+            dtype=torch.float32,
+            device=self.device,
         )
         gamma = torch.ones(self.num_envs, dtype=torch.float32, device=self.device)
         next_values = torch.zeros(
-            (self.horizon + 1, self.num_envs), dtype=torch.float32, device=self.device
+            (self.horizon + 1, self.num_envs),
+            dtype=torch.float32,
+            device=self.device,
         )
 
         actor_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
@@ -248,41 +254,6 @@ class SHAC:
             real_obs = info["obs_before_reset"]
             primal = info["primal"]
 
-            if self.save_data:
-                with torch.no_grad():
-                    td = TensorDict(
-                        dict(
-                            obs=real_obs.clone().unsqueeze(0),
-                            action=actions.clone().unsqueeze(0),
-                            reward=rew.clone().unsqueeze(0),
-                        ),
-                        (1,),
-                    )
-                    self.per_episode_data.append(td)
-
-                    if done.all():
-                        print("Episode terminated and dumping data")
-                        data = TensorDict(
-                            torch.cat(self.per_episode_data),
-                            batch_size=(self.env.episode_length + 1, self.num_envs),
-                        ).permute(1, 0)
-                        self.episode_data.append(data)
-
-                        # now need to reset per_episode_data
-                        self.per_episode_data = []
-
-                        # save data with nan action and rewards
-                        a = torch.full_like(
-                            torch.zeros(1, self.num_envs, self.num_actions), torch.nan
-                        ).to(self.device)
-                        r = torch.full_like(
-                            torch.zeros(1, self.num_envs), torch.nan
-                        ).to(self.device)
-                        td = TensorDict(
-                            dict(obs=obs.clone().unsqueeze(0), action=a, reward=r), (1,)
-                        )
-                        self.per_episode_data = [td]
-
             with torch.no_grad():
                 raw_rew = rew.clone()
 
@@ -294,6 +265,12 @@ class SHAC:
 
             self.episode_length += 1
             rollout_len += 1
+
+            # contact truncation
+            cfs = info["contact_forces"]
+            acc = info["accelerations"]
+            cfs_normalised = torch.where(acc != 0.0, cfs / acc, torch.zeros_like(cfs))
+            self.cfs[i] = torch.norm(cfs_normalised, dim=(1, 2))
 
             # sanity check
             if (~torch.isfinite(real_obs)).sum() > 0:
@@ -381,6 +358,8 @@ class SHAC:
 
         self.horizon_length_meter.update(rollout_len)
 
+        with torch.no_grad():
+            self.ret = actor_loss.clone().detach()
         self.actor_loss_before = actor_loss.mean().item()
 
         if self.ret_rms is not None:
@@ -508,7 +487,7 @@ class SHAC:
         self.time_report.start_timer("algorithm")
 
         # initializations
-        obs = self.env.reset()
+        self.env.reset()
         self.episode_loss = torch.zeros(
             self.num_envs, dtype=torch.float32, device=self.device
         )
@@ -524,21 +503,6 @@ class SHAC:
         self.episode_gamma = torch.ones(
             self.num_envs, dtype=torch.float32, device=self.device
         )
-        self.per_episode_data = []
-
-        if self.save_data:
-            with torch.no_grad():
-                # save data with nan action and rewards
-                act = torch.full_like(
-                    torch.zeros(1, self.num_envs, self.num_actions), torch.nan
-                ).to(self.device)
-                rew = torch.full_like(torch.zeros(1, self.num_envs), torch.nan).to(
-                    self.device
-                )
-                td = TensorDict(
-                    dict(obs=obs.clone().unsqueeze(0), action=act, reward=rew), (1,)
-                )
-                self.per_episode_data.append(td)
 
         def actor_closure():
             self.actor_optimizer.zero_grad()
@@ -598,8 +562,9 @@ class SHAC:
             self.time_report.start_timer("prepare critic dataset")
             with torch.no_grad():
                 self.compute_target_values()
+                critic_batch_size = self.num_envs * self.horizon // self.critic_batches
                 dataset = CriticDataset(
-                    self.critic_batch_size,
+                    critic_batch_size,
                     self.obs_buf,
                     self.target_values,
                 )
@@ -607,7 +572,9 @@ class SHAC:
 
             self.time_report.start_timer("critic training")
             self.value_loss = 0.0
-            for j in range(self.critic_iterations):
+            last_losses = deque(maxlen=5)
+            max_iterations = 64
+            for j in range(max_iterations):
                 total_critic_loss = 0.0
                 batch_cnt = 0
                 for i in range(len(dataset)):
@@ -626,12 +593,18 @@ class SHAC:
 
                     self.critic_optimizer.step()
 
-                    total_critic_loss += training_critic_loss
+                    total_critic_loss += training_critic_loss.item()
                     batch_cnt += 1
 
-                self.value_loss = total_critic_loss / batch_cnt
+                total_critic_loss /= batch_cnt
+                if len(last_losses) == 5:
+                    diff = abs(np.diff(last_losses).mean())
+                    if diff < 2e-1:
+                        break
+                last_losses.append(total_critic_loss)
+                self.value_loss = total_critic_loss
                 print(
-                    f"value iter {j + 1}/{self.critic_iterations}, loss = {self.value_loss:.2f}",
+                    f"value iter {j + 1}/{max_iterations}, loss = {self.value_loss:.2f}",
                     end="\r",
                 )
 
@@ -639,8 +612,40 @@ class SHAC:
 
             self.iter_count += 1
 
-            time_end_epoch = time.time()
+            # Train horizon
+            h_grad = -self.ret / self.H - self.lambd * self.H
+            self.H += self.h_lr * h_grad.mean()
+            self.H = torch.clip(self.H, self.horizon_min, self.horizon_max)
 
+            # train lambda
+            self.lambd += self.lambd_lr * (self.H - self.horizon_min)
+
+            # reset buffers correctly for next iteration
+            self.obs_buf = torch.zeros(
+                (self.horizon, self.num_envs, self.num_obs),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            self.rew_buf = torch.zeros(
+                (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+            )
+            self.done_mask = torch.zeros(
+                (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+            )
+            self.next_values = torch.zeros(
+                (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+            )
+            self.target_values = torch.zeros(
+                (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+            )
+            self.ret = torch.zeros(
+                (self.num_envs), dtype=torch.float32, device=self.device
+            )
+            self.cfs = torch.zeros(
+                (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
+            )
+
+            time_end_epoch = time.time()
             fps = self.horizon * self.num_envs / (time_end_epoch - time_start_epoch)
 
             # logging
@@ -711,13 +716,9 @@ class SHAC:
 
         self.save("final_policy")
 
-        if self.save_data:
-            data = torch.cat(self.episode_data)
-            eps = len(data)
-            torch.save(data, f"{self.log_dir}/ep_data_{self.env_name}_ep{eps}.pt")
-
         self.writer.close()
 
+    # TODO might not need state dict here
     def save(self, filename):
         torch.save(
             {
