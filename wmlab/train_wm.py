@@ -13,6 +13,8 @@ from common.seed import set_seed
 from common.buffer import Buffer
 from envs import make_env
 from tdmpc2 import TDMPC2
+from fowm import FOWM
+from fowm2 import FOWM2
 from trainer.offline_trainer import OfflineTrainer
 from trainer.online_trainer import OnlineTrainer
 from common.logger import Logger
@@ -55,6 +57,8 @@ def train(cfg: dict):
         cfg=cfg,
         env=make_env(cfg),
         agent=TDMPC2(cfg),
+        # agent=FOWM(cfg),
+        # agent=FOWM2(cfg),
         buffer=Buffer(cfg),
         logger=Logger(cfg),
     )

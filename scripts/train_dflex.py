@@ -55,6 +55,9 @@ def train(cfg: DictConfig):
 
     seeding(cfg.general.seed, False)
 
+    if "fowm" in cfg.alg._target_.lower():
+        cfg.env.config.no_grad = True
+
     env = instantiate(cfg.env.config, logdir=logdir)
     print("num_envs = ", env.num_envs)
     print("num_actions = ", env.num_actions)
