@@ -9,11 +9,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import hydra
 
-
 sns.set()
 colors = sns.color_palette()
 
 sys.excepthook = ultratb.FormattedTB(mode="Plain", color_scheme="Neutral", call_pdb=1)
+
+"""
+This script loads a single TDMPC world model, an SHAC actor and throws then in simulation.
+It produces a figure showing actor loss landscapes and their gradients for different horizon lengths.
+
+Note: output figure is saved in the hydra location
+"""
 
 
 @hydra.main(config_name="config", config_path=".")
@@ -35,6 +41,7 @@ def main(cfg: dict):
     )
     actor.load_state_dict(chkpt["actor"])
     actor2.load_state_dict(chkpt["actor"])
+    obs_rms = chkpt["obs_rms"].to(device)
 
     from tdmpc2 import TDMPC2
     from common.parser import parse_cfg
@@ -78,6 +85,7 @@ def main(cfg: dict):
             obs = env.reset()
             obs = env.initialize_trajectory()
             z = tdmpc.model.encode(obs, None)
+            obs = obs_rms.normalize(obs)
             reward = torch.tensor([0.0]).to(device)
             td_reward = torch.tensor([0.0]).to(device)
 
@@ -88,6 +96,7 @@ def main(cfg: dict):
                 assert torch.all(act == act2)
 
                 obs, rew, done, info = env.step(act)
+                obs = obs_rms.normalize(obs)
                 reward += rew
 
                 rew = two_hot_inv(tdmpc.model.reward(z, act2, None), cfg)[0]
@@ -119,7 +128,7 @@ def main(cfg: dict):
         axs[k][1].set_xlabel(r"$\Delta \theta$")
         axs[k][1].set_ylabel(r"$\nabla J(\theta)$")
     plt.tight_layout()
-    plt.savefig(f"sensitivity.pdf")
+    plt.savefig(f"landscapes.pdf")
 
 
 if __name__ == "__main__":

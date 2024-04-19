@@ -9,17 +9,17 @@ env:
   _target_: dflex.envs.AntEnv
   render: False
   device: "cuda"
-  num_envs: 128
+  num_envs: 1
   stochastic_init: True
   no_grad: True
-  episode_length: 1000
+  episode_length: 500
   MM_caching_frequency: 16
   early_termination: True
 
 # evaluation
 checkpoint: ???
 eval_episodes: 10
-eval_freq: 20_000
+eval_freq: 5000
 
 # training
 steps: 10_000_000
@@ -32,6 +32,7 @@ rho: 0.5 # weight of predicted next states for policy loss
 lr: 3e-4
 enc_lr_scale: 0.3
 grad_clip_norm: 20
+actor_grad_clip_norm: 20
 tau: 0.01
 discount_denom: 5
 discount_min: 0.95
@@ -53,8 +54,8 @@ max_std: 2
 temperature: 0.5
 
 # actor
-log_std_min: -5
-log_std_max: 0.5
+log_std_min: -10
+log_std_max: 2
 entropy_coef: 1e-4
 
 # critic
@@ -76,15 +77,15 @@ simnorm_dim: 8
 
 # logging
 wandb_project: fowm
-wandb_entity: imgeorgiev
+wandb_entity: pair-diffusion
 wandb_silent: false
 disable_wandb: true
 save_csv: true
 
 # misc
 save_video: false
-save_agent: True
-seed: 2
+save_agent: false
+seed: 1
 
 # convenience
 work_dir: ???
