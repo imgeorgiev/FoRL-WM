@@ -4,7 +4,7 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from forl.models.mlp import mlp
+from forl.models.mlp import mlp, SimNorm
 from torch.optim import Adam
 import torch.nn as nn
 
@@ -63,7 +63,7 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
 
 # train simply MLP
 torch.manual_seed(0)
-model = mlp(1, [32, 32], 1)
+model = mlp(1, [32, 32], 1, norm=True)
 opt = Adam(model.parameters(), lr=lr)
 print("Training...")
 model.train()
@@ -85,7 +85,7 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
 
 # train simply MLP
 torch.manual_seed(0)
-model2 = mlp(1, [32, 32], 1, norm=True)
+model2 = mlp(1, [32, 32], 1, spectral=True)
 opt = Adam(model2.parameters(), lr=lr)
 print("Training...")
 model2.train()
@@ -108,10 +108,11 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
 
 print("Plotting the problem landscape")
 ax.plot(xx, -f(x, v, xx, a, t), label=r"$J(\theta)$")
+models = {0: "MLP", 1: "TDMPC MLP", 2: "SNorm MLP"}
 for i, model in enumerate([model0, model, model2]):
     model.eval()
     est = model(xx.unsqueeze(1)).detach().numpy()
-    ax.plot(xx, est, label=f"model {i}")
+    ax.plot(xx, est, label=models[i])
 
 ax.set_xlabel(r"$\theta$")
 ax.legend()
