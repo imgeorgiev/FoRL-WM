@@ -80,6 +80,7 @@ wandb_entity: imgeorgiev
 wandb_silent: false
 disable_wandb: true
 save_csv: true
+experimental: false
 
 # misc
 save_video: false
