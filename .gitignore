@@ -1,6 +1,7 @@
 **__pycache__/
 **.ipynb_checkpoints/
 *outputs/
+*outputs
 *.swp
 *.swo
 tags
@@ -8,6 +9,10 @@ tags
 **.log
 **.pdf
 **/run.sh
+**/logs/
+**/logs
+**/data/
+**/data
 
 dflex/dflex/kernels*/
 **logs/
