@@ -40,13 +40,13 @@ def main(cfg: dict):
         # start_state=[np.pi / 2, np.pi / 2, 0.0, 0.0],
         device=device,
     )
-    H = 100
+    H = 50
     samples = 100
 
     model_paths = {
-        "TDMPC": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/100/pretrain_baseline/models/final.pt",
-        "TDMPC_no_sn": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/200/pretrain_baseline/models/final.pt",
-        "TDMPC_simple": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/300/pretrain_tdmpc_simple/models/final.pt",
+        "TDMPC": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/100/pretrain_baseline/models/15000.pt",
+        "TDMPC_no_sn": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/200/pretrain_baseline/models/15000.pt",
+        "TDMPC_simple": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/300/pretrain_tdmpc_simple/models/15000.pt",
     }
 
     tdmpcs = {}
@@ -72,7 +72,7 @@ def main(cfg: dict):
     f, ax = plt.subplots(1, 2, figsize=(8, 3))
     ax = ax.flatten()
 
-    save_data = {}
+    # save_data = {}
 
     print("Computing policy variance for dflex")
     all_grads = []
@@ -98,11 +98,14 @@ def main(cfg: dict):
         all_grads.append(grads)
 
     # Plotting!
-    grads = torch.stack(all_grads)  # H x samples x n_params
-    save_data["dflex_grads"] = grads
-    variance = grads.var(dim=1).mean(dim=1)
-    variance_std = grads.var(dim=1).std(dim=1)
-    policy_snr = (grads.mean(dim=1) ** 2 / (grads.var(dim=1) + 1e-9)).mean(dim=1)
+    all_grads = torch.stack(all_grads)  # H x samples x n_params
+    torch.save(all_grads, "dflex_grads.pt")
+    # save_data["dflex_grads"] = grads
+    variance = all_grads.var(dim=1).mean(dim=1)
+    variance_std = all_grads.var(dim=1).std(dim=1)
+    policy_snr = (all_grads.mean(dim=1) ** 2 / (all_grads.var(dim=1) + 1e-9)).mean(
+        dim=1
+    )
     ax[0].plot(range(H), variance, label="GT")
     # ax[0].fill_between(range(H), lower_bound, upper_bound, alpha=0.5)
     ax[1].plot(range(H), policy_snr, label="GT")
@@ -133,11 +136,14 @@ def main(cfg: dict):
             all_grads.append(grads)
 
         # Plotting!
-        grads = torch.stack(all_grads)  # H x samples x n_params
-        save_data[f"{key}_grads"] = grads
-        variance = grads.var(dim=1).mean(dim=1)
-        variance_std = grads.var(dim=1).std(dim=1)
-        policy_snr = (grads.mean(dim=1) ** 2 / (grads.var(dim=1) + 1e-9)).mean(dim=1)
+        all_grads = torch.stack(all_grads)  # H x samples x n_params
+        # save_data[f"{key}_grads"] = grads
+        torch.save(all_grads, f"{key}_grads.pt")
+        variance = all_grads.var(dim=1).mean(dim=1)
+        variance_std = all_grads.var(dim=1).std(dim=1)
+        policy_snr = (all_grads.mean(dim=1) ** 2 / (all_grads.var(dim=1) + 1e-9)).mean(
+            dim=1
+        )
         ax[0].plot(range(H), variance, label=key)
         # ax[0].fill_between(range(H), lower_bound, upper_bound, alpha=0.5)
         ax[1].plot(range(H), policy_snr, label=key)
@@ -155,7 +161,7 @@ def main(cfg: dict):
     plt.savefig("sensitivity.pdf")
 
     # save data
-    torch.save(save_data, "gradients.pt")  # lots of data! need to compreess
+    # torch.save(save_data, "gradients.pt")  # lots of data! need to compreess
 
 
 def get_grads(model):
