@@ -161,7 +161,6 @@ class SHAC:
         self.step_count = 0
 
         # loss variables
-        self.episode_loss_his = []
         self.episode_loss = torch.zeros(
             self.num_envs, dtype=torch.float32, device=self.device
         )
@@ -354,30 +353,28 @@ class SHAC:
 
             # collect episode loss
             with torch.no_grad():
+                # collect episode stats
                 self.episode_loss -= raw_rew
                 self.episode_discounted_loss -= self.episode_gamma * raw_rew
                 self.episode_primal -= primal
                 self.episode_gamma *= self.gamma
-                if len(done_env_ids) > 0:
-                    self.episode_loss_meter.update(self.episode_loss[done_env_ids])
-                    self.episode_discounted_loss_meter.update(
-                        self.episode_discounted_loss[done_env_ids]
-                    )
-                    self.episode_primal_meter.update(self.episode_primal[done_env_ids])
-                    self.episode_length_meter.update(self.episode_length[done_env_ids])
-                    self.horizon_length_meter.update(rollout_len[done_env_ids])
-                    rollout_len[done_env_ids] = 0
-                    for id in done_env_ids:
-                        if self.episode_loss[id] > 1e6 or self.episode_loss[id] < -1e6:
-                            print_error("ep loss error")
-                            raise ValueError
 
-                        self.episode_loss_his.append(self.episode_loss[id].item())
-                        self.episode_loss[id] = 0.0
-                        self.episode_discounted_loss[id] = 0.0
-                        self.episode_primal[id] = 0.0
-                        self.episode_length[id] = 0
-                        self.episode_gamma[id] = 1.0
+                # dump data from done episodes
+                self.episode_loss_meter.update(self.episode_loss[done_env_ids])
+                self.episode_discounted_loss_meter.update(
+                    self.episode_discounted_loss[done_env_ids]
+                )
+                self.episode_primal_meter.update(self.episode_primal[done_env_ids])
+                self.episode_length_meter.update(self.episode_length[done_env_ids])
+                self.horizon_length_meter.update(rollout_len[done_env_ids])
+
+                # reset trackers
+                rollout_len[done_env_ids] = 0
+                self.episode_loss[done_env_ids] = 0.0
+                self.episode_discounted_loss[done_env_ids] = 0.0
+                self.episode_primal[done_env_ids] = 0.0
+                self.episode_length[done_env_ids] = 0
+                self.episode_gamma[done_env_ids] = 1.0
 
         self.horizon_length_meter.update(rollout_len)
 
@@ -650,37 +647,28 @@ class SHAC:
             self.log_scalar("rollout_len", self.mean_horizon)
             self.log_scalar("fps", fps)
 
-            if len(self.episode_loss_his) > 0:
-                mean_episode_length = self.episode_length_meter.get_mean()
-                mean_policy_loss = self.episode_loss_meter.get_mean()
-                mean_policy_discounted_loss = (
-                    self.episode_discounted_loss_meter.get_mean()
-                )
-                mean_episode_primal = self.episode_primal_meter.get_mean()
+            mean_episode_length = self.episode_length_meter.get_mean()
+            mean_policy_loss = self.episode_loss_meter.get_mean()
+            mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
+            mean_episode_primal = self.episode_primal_meter.get_mean()
 
-                if mean_policy_loss < self.best_policy_loss:
-                    print_info(
-                        "save best policy with loss {:.2f}".format(mean_policy_loss)
-                    )
-                    self.save(f"best_policy")
-                    self.best_policy_loss = mean_policy_loss
+            if mean_policy_loss < self.best_policy_loss:
+                print_info("save best policy with loss {:.2f}".format(mean_policy_loss))
+                self.save(f"best_policy")
+                self.best_policy_loss = mean_policy_loss
 
-                self.log_scalar("policy_loss", mean_policy_loss)
-                self.log_scalar("rewards", -mean_policy_loss)
-                self.log_scalar("primal", -mean_episode_primal)
-                self.log_scalar("policy_discounted_loss", mean_policy_discounted_loss)
-                self.log_scalar("best_policy_loss", self.best_policy_loss)
-                self.log_scalar("episode_lengths", mean_episode_length)
-                ac_stddev = self.actor.get_logstd().exp().mean().detach().cpu().item()
-                self.log_scalar("ac_std", ac_stddev)
-                self.log_scalar("actor_grad_norm", self.grad_norm_before_clip)
-                self.log_scalar("critic_grad_norm", self.critic_grad_norm_val)
-                self.log_scalar("episode_end", self.episode_end)
-                self.log_scalar("early_termination", self.early_termination)
-            else:
-                mean_policy_loss = torch.inf
-                mean_policy_discounted_loss = torch.inf
-                mean_episode_length = 0
+            self.log_scalar("policy_loss", mean_policy_loss)
+            self.log_scalar("rewards", -mean_policy_loss)
+            self.log_scalar("primal", -mean_episode_primal)
+            self.log_scalar("policy_discounted_loss", mean_policy_discounted_loss)
+            self.log_scalar("best_policy_loss", self.best_policy_loss)
+            self.log_scalar("episode_lengths", mean_episode_length)
+            ac_stddev = self.actor.get_logstd().exp().mean().detach().cpu().item()
+            self.log_scalar("ac_std", ac_stddev)
+            self.log_scalar("actor_grad_norm", self.grad_norm_before_clip)
+            self.log_scalar("critic_grad_norm", self.critic_grad_norm_val)
+            self.log_scalar("episode_end", self.episode_end)
+            self.log_scalar("early_termination", self.early_termination)
 
             print(
                 "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}/{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}".format(
