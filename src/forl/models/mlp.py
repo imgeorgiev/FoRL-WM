@@ -1,6 +1,8 @@
 import torch.nn as nn
 from torch.nn.utils.parametrizations import spectral_norm
 import torch.nn.functional as F
+from typing import List, Optional
+from hydra.utils import instantiate
 
 
 class NormedLinear(nn.Linear):
@@ -50,36 +52,33 @@ class SimNorm(nn.Module):
         return f"SimNorm(dim={self.dim})"
 
 
-def mlp(
-    in_dim,
-    mlp_dims,
-    out_dim,
-    layer=nn.Linear,
-    act=nn.Mish,
-    norm=False,
-    spectral=False,
-    last=False,
-):
-    """
-    Basic building block of TD-MPC2.
-    MLP with LayerNorm, Mish activations, and optionally dropout.
-    """
-    if isinstance(mlp_dims, int):
-        mlp_dims = [mlp_dims]
-    dims = [in_dim] + mlp_dims + [out_dim]
-    mlp = nn.ModuleList()
-    for i in range(len(dims) - 2):
-        mlp.append(layer(dims[i], dims[i + 1]))
-        # if spectral:
-        #     mlp[-1] = spectral_norm(mlp[-1])
-        if norm:
-            mlp.append(nn.LayerNorm(dims[i + 1]))
-        mlp.append(act())
-    mlp.append(
-        NormedLinear(dims[-2], dims[-1], act=last())
-        if last
-        else nn.Linear(dims[-2], dims[-1])
-    )
-    if spectral:
-        mlp[-1] = spectral_norm(mlp[-1])
-    return nn.Sequential(*mlp)
+class MLP(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        units: List[int],
+        activation_cfg: dict = {"_target_": "torch.nn.Mish", "inplace": True},
+        activation_cfg_last: Optional[dict] = None,
+        spectral: bool = False,
+    ):
+        super(MLP, self).__init__()
+        self.layer_dims = [input_dim] + units + [output_dim]
+
+        modules = []
+        for i in range(len(self.layer_dims) - 1):
+            modules.append(nn.Linear(self.layer_dims[i], self.layer_dims[i + 1]))
+            if i < len(self.layer_dims) - 2:
+                modules.append(nn.LayerNorm(self.layer_dims[i + 1]))
+                modules.append(instantiate(activation_cfg))
+
+        if spectral:
+            modules[-1] = spectral_norm(modules[-1])
+
+        if activation_cfg_last:
+            modules.append(activation_cfg_last)
+
+        self.model = nn.Sequential(*modules)
+
+    def forward(self, x):
+        return self.model(x)
