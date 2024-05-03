@@ -42,5 +42,6 @@ critic_grad_norm: 100.0 # Can also be none
 wm_batch_size: 256
 wm_iterations: 8
 wm_grad_norm: 20.0
+wm_buffer_size: 10000000
 save_interval: ${resolve_child:400,${env.shac},save_interval}
 device: ${general.device}

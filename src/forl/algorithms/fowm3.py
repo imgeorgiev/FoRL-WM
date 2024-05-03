@@ -647,6 +647,12 @@ class FOWM:
 
         # main training process
         for epoch in range(self.max_epochs):
+
+            if self.buffer.num_eps == 0:
+                with torch.no_grad():
+                    self.compute_actor_loss()
+                continue
+
             time_start_epoch = time.time()
 
             # learning rate schedule
@@ -724,53 +730,45 @@ class FOWM:
 
             self.time_report.end_timer("critic training")
 
-            tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = (
-                torch.nan
-            )
-            sample_rew_mean = sample_rew_var = torch.nan
-            sample_obs_mean = sample_obs_var = torch.nan
-            wm_grad_norm = torch.inf
-
             self.time_report.start_timer("world model training")
 
             # world model training!
-            if self.buffer.num_eps > 1:
-                tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = 0.0
-                if self.wm_bootstrapped:
-                    iters = self.wm_iterations
-                else:
-                    iters = self.env.episode_length
-                    print(f"training wm for {iters} iterations")
-                    self.wm_bootstrapped = True
+            tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = 0.0
+            sample_rew_mean = sample_rew_var = 0.0
+            sample_obs_mean = sample_obs_var = 0.0
+            if self.wm_bootstrapped:
+                iters = self.wm_iterations
+            else:
+                iters = self.env.episode_length
+                print(f"training wm for {iters} iterations")
+                self.wm_bootstrapped = True
 
-                for i in range(0, iters):
-                    obs, act, rew, term = self.buffer.sample()
-                    if self.rew_rms:
-                        with torch.no_grad():
-                            self.rew_rms.update(rew.reshape((-1, 1)))
-                            rew = self.rew_rms.normalize(rew)
-                    sample_rew_mean += rew.mean().item()
-                    sample_rew_var += rew.var().item()
-                    sample_obs_mean += obs.mean(dim=0).mean().item()
-                    sample_obs_var += obs.var(dim=0).mean().item()
+            for i in range(0, iters):
+                obs, act, rew, term = self.buffer.sample()
+                if self.rew_rms:
+                    with torch.no_grad():
+                        self.rew_rms.update(rew.reshape((-1, 1)))
+                        rew = self.rew_rms.normalize(rew)
+                sample_rew_mean += rew.mean().item()
+                sample_rew_var += rew.var().item()
+                sample_obs_mean += obs.mean(dim=0).mean().item()
+                sample_obs_var += obs.var(dim=0).mean().item()
 
-                    self.wm_optimizer.zero_grad()
-                    loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-                        obs, act, rew, term
-                    )
-                    loss.backward()
-                    wm_grad_norm = clip_grad_norm_(
-                        self.wm.parameters(), self.wm_grad_norm
-                    )
-                    self.wm_optimizer.step()
-                    tot_wm_loss += loss.item()
-                    tot_dynamics_loss += dyn_loss
-                    tot_reward_loss += rew_loss
-                    tot_term_loss += term_loss
-                    print(
-                        f"wm iter {j + 1}/{self.wm_iterations}, loss = {loss:.2f}",
-                        end="\r",
-                    )
+                self.wm_optimizer.zero_grad()
+                loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
+                    obs, act, rew, term
+                )
+                loss.backward()
+                wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
+                self.wm_optimizer.step()
+                tot_wm_loss += loss.item()
+                tot_dynamics_loss += dyn_loss
+                tot_reward_loss += rew_loss
+                tot_term_loss += term_loss
+                print(
+                    f"wm iter {j + 1}/{self.wm_iterations}, loss = {loss:.2f}",
+                    end="\r",
+                )
 
                 # normalize for logging; TODO simplify
                 tot_wm_loss /= iters
