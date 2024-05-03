@@ -735,6 +735,7 @@ class FOWM:
 
             # world model training!
             if self.buffer.num_eps > 1:
+                tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = 0.0
                 if self.wm_bootstrapped:
                     iters = self.wm_iterations
                 else:
@@ -744,13 +745,10 @@ class FOWM:
 
                 for i in range(0, iters):
                     obs, act, rew, term = self.buffer.sample()
-                    # rew = rew.squeeze(-1)
-                    # term = term.squeeze(-1)
                     if self.rew_rms:
-                        for d in range(rew.shape[0]):
-                            self.rew_rms.update(rew[d])
-                        for d in range(rew.shape[0]):
-                            rew[d] = self.rew_rms.normalize(rew[d])
+                        with torch.no_grad():
+                            self.rew_rms.update(rew.reshape((-1, 1)))
+                            rew = self.rew_rms.normalize(rew)
                     sample_rew_mean += rew.mean().item()
                     sample_rew_var += rew.var().item()
                     sample_obs_mean += obs.mean(dim=0).mean().item()
@@ -936,17 +934,22 @@ class FOWM:
         for path in paths:
             print("loading", path)
             td = torch.load(path)
+
+            # fetch stats for normalizing
+            if self.rew_rms:
+                rew = td["reward"]
+                rew = rew.reshape((-1, 1))
+                rew = torch.nan_to_num(rew)
+                self.rew_rms.update(rew)
+
             self.buffer.add_batch(td)
 
         print(f"Pretraining world model for {num_iters} iters")
         for i in range(0, num_iters):
             obs, act, rew, term = self.buffer.sample()
-            if self.rew_rms:
-                for d in range(rew.shape[0]):
-                    self.rew_rms.update(rew[d])
-                for d in range(rew.shape[0]):
-                    rew[d] = self.rew_rms.normalize(rew[d])
-
+            with torch.no_grad():
+                if self.rew_rms:
+                    rew = self.rew_rms.normalize(rew)
             self.wm_optimizer.zero_grad()
             loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
                 obs, act, rew, term
