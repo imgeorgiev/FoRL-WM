@@ -38,9 +38,9 @@ class SimNorm(nn.Module):
     Adapted from https://arxiv.org/abs/2204.00616.
     """
 
-    def __init__(self):
+    def __init__(self, simnorm_dim):
         super().__init__()
-        self.dim = 8  # cfg.simnorm_dim
+        self.dim = simnorm_dim
 
     def forward(self, x):
         shp = x.shape

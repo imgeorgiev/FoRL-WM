@@ -13,6 +13,7 @@ class RunningMeanStd(object):
         :param epsilon: helps with arithmetic issues
         :param shape: the shape of the data stream's output
         """
+        self.shape = shape
         self.mean = torch.zeros(shape, dtype=torch.float32, device=device)
         self.var = torch.ones(shape, dtype=torch.float32, device=device)
         self.count = epsilon
@@ -29,6 +30,9 @@ class RunningMeanStd(object):
         batch_mean = torch.mean(arr, dim=0)
         batch_var = torch.var(arr, dim=0, unbiased=False)
         batch_count = arr.shape[0]
+        if batch_mean.shape != ():
+            assert batch_mean.shape == self.mean.shape
+            assert batch_var.shape == self.var.shape
         self.update_from_moments(batch_mean, batch_var, batch_count)
 
     def update_from_moments(

@@ -29,4 +29,7 @@ class AverageMeter(nn.Module):
         return self.current_size
 
     def get_mean(self):
-        return self.mean.squeeze(0).cpu().numpy()
+        if self.current_size == 0:
+            return torch.nan
+        else:
+            return self.mean.squeeze(0).cpu().numpy()

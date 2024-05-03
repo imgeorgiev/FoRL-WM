@@ -65,6 +65,9 @@ def train(cfg: DictConfig):
     if cfg.general.checkpoint:
         agent.load(cfg.general.checkpoint)
 
+    if cfg.general.pretrain:
+        agent.pretrain_wm(cfg.general.pretrain, cfg.general.pretrain_steps)
+
     if cfg.general.train:
         agent.train()
 
