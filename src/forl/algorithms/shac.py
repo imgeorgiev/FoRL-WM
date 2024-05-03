@@ -1,5 +1,5 @@
 import os, time, copy
-from tensorboardX import SummaryWriter
+import wandb
 from omegaconf import DictConfig
 from hydra.utils import instantiate
 from typing import Optional, List, Tuple
@@ -8,7 +8,6 @@ from torch.nn.utils.clip_grad import clip_grad_norm_
 from gym import Env
 import tensordict
 from tensordict import TensorDict
-
 from forl.utils.common import *
 import forl.utils.torch_utils as tu
 from forl.utils.running_mean_std import RunningMeanStd
@@ -106,7 +105,6 @@ class SHAC:
 
         self.log_dir = logdir
         os.makedirs(self.log_dir, exist_ok=True)
-        self.writer = SummaryWriter(os.path.join(self.log_dir, "log"))
 
         # Create actor and critic
         self.actor = instantiate(
@@ -177,10 +175,8 @@ class SHAC:
             self.num_envs, dtype=torch.int, device=self.device
         )
         self.best_policy_loss = torch.inf
-        self.actor_loss = torch.inf
-        self.value_loss = torch.inf
-        self.grad_norm_before_clip = torch.inf
-        self.grad_norm_after_clip = torch.inf
+        self.actor_grad_norm_before_clip = torch.inf
+        self.actor_grad_norm_after_clip = torch.inf
         self.critic_grad_norm_val = torch.inf
         self.early_termination = 0
         self.episode_end = 0
@@ -378,8 +374,6 @@ class SHAC:
 
         self.horizon_length_meter.update(rollout_len)
 
-        self.actor_loss_before = actor_loss.mean().item()
-
         if self.ret_rms is not None:
             self.ret_rms.update(actor_loss)
             actor_loss /= torch.sqrt(self.ret_rms.var + 1e-5)
@@ -387,8 +381,6 @@ class SHAC:
             actor_loss /= self.horizon
 
         actor_loss = actor_loss.mean()
-
-        self.actor_loss = actor_loss.detach().item()
 
         self.step_count += self.horizon * self.num_envs
 
@@ -550,16 +542,15 @@ class SHAC:
             actor_loss.backward()
             self.time_report.end_timer("backward simulation")
 
-            with torch.no_grad():
-                self.grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
-                if self.actor_grad_norm:
-                    clip_grad_norm_(self.actor.parameters(), self.actor_grad_norm)
-                self.grad_norm_after_clip = tu.grad_norm(self.actor.parameters())
+            self.actor_grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
+            self.actor_grad_norm_after_clip = clip_grad_norm_(
+                self.actor.parameters(), self.actor_grad_norm
+            )
 
-                # sanity check
-                if torch.isnan(self.grad_norm_before_clip):
-                    print_error("NaN gradient")
-                    raise ValueError
+            # sanity check
+            if torch.isnan(self.actor_grad_norm_before_clip):
+                print_error("NaN gradient")
+                raise ValueError
 
             self.time_report.end_timer("compute actor loss")
 
@@ -587,7 +578,7 @@ class SHAC:
 
             # train actor
             self.time_report.start_timer("actor training")
-            self.actor_optimizer.step(actor_closure)
+            actor_loss = self.actor_optimizer.step(actor_closure)
             self.time_report.end_timer("actor training")
 
             # train critic
@@ -603,7 +594,7 @@ class SHAC:
             self.time_report.end_timer("prepare critic dataset")
 
             self.time_report.start_timer("critic training")
-            self.value_loss = 0.0
+            value_loss = 0.0
             for j in range(self.critic_iterations):
                 total_critic_loss = 0.0
                 batch_cnt = 0
@@ -617,61 +608,59 @@ class SHAC:
                     for params in self.critic.parameters():
                         params.grad.nan_to_num_(0.0, 0.0, 0.0)
 
-                    self.critic_grad_norm_val = tu.grad_norm(self.critic.parameters())
-                    if self.critic_grad_norm:
-                        clip_grad_norm_(self.critic.parameters(), self.critic_grad_norm)
-
+                    critic_grad_norm = clip_grad_norm_(
+                        self.critic.parameters(), self.critic_grad_norm
+                    )
                     self.critic_optimizer.step()
 
                     total_critic_loss += training_critic_loss
                     batch_cnt += 1
 
-                self.value_loss = total_critic_loss / batch_cnt
+                value_loss = total_critic_loss / batch_cnt
                 print(
-                    f"value iter {j + 1}/{self.critic_iterations}, loss = {self.value_loss:.2f}",
+                    f"value iter {j + 1}/{self.critic_iterations}, loss = {value_loss:.2f}",
                     end="\r",
                 )
 
             self.time_report.end_timer("critic training")
 
             self.iter_count += 1
-
             time_end_epoch = time.time()
-
             fps = self.horizon * self.num_envs / (time_end_epoch - time_start_epoch)
-
-            # logging
-            self.log_scalar("lr", lr)
-            self.log_scalar("actor_loss", self.actor_loss)
-            self.log_scalar("value_loss", self.value_loss)
-            self.log_scalar("rollout_len", self.mean_horizon)
-            self.log_scalar("fps", fps)
-
             mean_episode_length = self.episode_length_meter.get_mean()
             mean_policy_loss = self.episode_loss_meter.get_mean()
             mean_policy_discounted_loss = self.episode_discounted_loss_meter.get_mean()
             mean_episode_primal = self.episode_primal_meter.get_mean()
+            ac_stddev = self.actor.get_logstd().exp().mean().detach().cpu().item()
 
             if mean_policy_loss < self.best_policy_loss:
                 print_info("save best policy with loss {:.2f}".format(mean_policy_loss))
                 self.save(f"best_policy")
                 self.best_policy_loss = mean_policy_loss
 
-            self.log_scalar("policy_loss", mean_policy_loss)
-            self.log_scalar("rewards", -mean_policy_loss)
-            self.log_scalar("primal", -mean_episode_primal)
-            self.log_scalar("policy_discounted_loss", mean_policy_discounted_loss)
-            self.log_scalar("best_policy_loss", self.best_policy_loss)
-            self.log_scalar("episode_lengths", mean_episode_length)
-            ac_stddev = self.actor.get_logstd().exp().mean().detach().cpu().item()
-            self.log_scalar("ac_std", ac_stddev)
-            self.log_scalar("actor_grad_norm", self.grad_norm_before_clip)
-            self.log_scalar("critic_grad_norm", self.critic_grad_norm_val)
-            self.log_scalar("episode_end", self.episode_end)
-            self.log_scalar("early_termination", self.early_termination)
+            metrics = {
+                "actor_lr": lr,
+                "actor_loss": actor_loss,
+                "value_loss": value_loss,
+                "rollout_len": self.mean_horizon,
+                "fps": fps,
+                "policy_loss": mean_policy_loss,
+                "rewards": -mean_policy_loss,
+                "primal": -mean_episode_primal,
+                "policy_discounted_loss": mean_policy_discounted_loss,
+                "best_policy_loss": self.best_policy_loss,
+                "episode_lengths": mean_episode_length,
+                "ac_std": ac_stddev,
+                "actor_grad_norm": self.actor_grad_norm_before_clip,
+                "critic_grad_norm": critic_grad_norm,
+                "episode_end": self.episode_end,
+                "early_termination": self.early_termination,
+            }
+            metrics = filter_dict(metrics)
+            wandb.log(metrics, step=self.step_count)
 
             print(
-                "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}/{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}".format(
+                "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}".format(
                     self.iter_count,
                     self.max_epochs,
                     -mean_policy_loss,
@@ -679,15 +668,12 @@ class SHAC:
                     self.mean_horizon,
                     self.step_count,
                     fps,
-                    self.actor_loss_before,
-                    self.actor_loss,
-                    self.grad_norm_before_clip,
-                    self.grad_norm_after_clip,
-                    self.value_loss,
+                    actor_loss,
+                    self.actor_grad_norm_before_clip,
+                    self.actor_grad_norm_after_clip,
+                    value_loss,
                 )
             )
-
-            self.writer.flush()
 
             if self.iter_count % self.save_interval == 0:
                 name = self.name + f"_iter{self.iter_count}_rew{-mean_policy_loss:0.0f}"
@@ -703,8 +689,6 @@ class SHAC:
             data = torch.cat(self.episode_data)
             eps = len(data)
             torch.save(data, f"{self.log_dir}/ep_data_{self.env_name}_ep{eps}.pt")
-
-        self.writer.close()
 
     def save(self, filename):
         torch.save(
@@ -734,7 +718,3 @@ class SHAC:
             if checkpoint["ret_rms"] is not None
             else None
         )
-
-    def log_scalar(self, scalar, value):
-        """Helper method for consistent logging"""
-        self.writer.add_scalar(f"{scalar}", value, self.step_count)

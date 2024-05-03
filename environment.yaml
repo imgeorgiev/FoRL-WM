@@ -22,7 +22,6 @@ dependencies:
       - black
       - termcolor
       - tqdm
-      - tensorboardX
       - rl_games # used as a baseline for comparison. Not required!
       # dflex simulator is used for examples. It is not required for the library.
       - git+https://github.com/imgeorgiev/DiffRL.git/#subdirectory=dflex
