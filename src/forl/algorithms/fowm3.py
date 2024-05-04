@@ -37,9 +37,7 @@ class FOWM:
         env: Env,
         actor_config: DictConfig,
         critic_config: DictConfig,
-        model_config: DictConfig,
-        reward_config: DictConfig,
-        terminate_config: DictConfig,
+        world_model_config: DictConfig,
         horizon: int,  # horizon for short rollouts
         max_epochs: int,  # number of short rollouts to do (i.e. epochs)
         logdir: str,
@@ -153,8 +151,11 @@ class FOWM:
         ]
         self.critic = Ensemble(critics)
 
-        self.wm = WorldModel(
-            self.num_obs, self.num_actions, self.latent_dim, mlp_dim=512, simnorm_dim=8
+        self.wm = instantiate(
+            world_model_config,
+            observation_dim=self.num_obs,
+            action_dim=self.num_actions,
+            latent_dim=self.latent_dim,
         ).to(self.device)
 
         # initialize optimizers
@@ -257,10 +258,6 @@ class FOWM:
         actor_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         primal = None
 
-        # copy running mean and std so that we don't change during training
-        # if self.obs_rms is not None:
-        # obs_rms = copy.deepcopy(self.obs_rms)
-
         # initialize trajectory to cut off gradients between epochs
         try:
             # Note this doesn't reset the env, just re-inits the gradients
@@ -272,10 +269,8 @@ class FOWM:
             raise AttributeError
 
         # update and normalize obs
-        # if self.obs_rms:
-        #     # self.obs_rms.update(obs)
-        #     obs = self.obs_rms.normalize(obs)
-        #     gt_obs = obs.clone()
+        if self.obs_rms:
+            obs = self.obs_rms.normalize(obs)
 
         z = self.wm.encode(obs, task=None)
 
@@ -346,11 +341,9 @@ class FOWM:
             with torch.no_grad():
                 raw_rew = gt_rew.clone()
 
-            # # update and normalize obs
-            # if self.obs_rms:
-            #     # self.obs_rms.update(gt_obs)
-            #     gt_obs = self.obs_rms.normalize(gt_obs)
-            #     # real_obs = self.obs_rms.normalize(real_obs)
+            # update and normalize obs
+            if self.obs_rms:
+                obs = self.obs_rms.normalize(obs)
 
             self.episode_length += 1
             rollout_len += 1
@@ -381,8 +374,9 @@ class FOWM:
 
             # for all done envs we reset observations and cut off gradients
             # Note this is important to do after critic next value compuataion!
+            # TODO should I do the below conditionally?
             gt_z = self.wm.encode(obs, task=None)
-            obs = torch.where(done[..., None], gt_z, z)
+            z = torch.where(done[..., None], gt_z, z)
 
             self.early_termination += torch.sum(term).item()
             self.episode_end += torch.sum(gt_trunc).item()
@@ -444,6 +438,7 @@ class FOWM:
                 self.episode_primal[gt_done_env_ids] = 0.0
                 self.episode_length[gt_done_env_ids] = 0
                 self.episode_gamma[gt_done_env_ids] = 1.0
+
         self.horizon_length_meter.update(rollout_len)
 
         if self.ret_rms is not None:
@@ -745,10 +740,13 @@ class FOWM:
 
             for i in range(0, iters):
                 obs, act, rew, term = self.buffer.sample()
+                if self.obs_rms:
+                    self.obs_rms.update(obs.reshape((-1, self.num_obs)))
+                    obs = self.rew_rms.normalize(obs)
+
                 if self.rew_rms:
-                    with torch.no_grad():
-                        self.rew_rms.update(rew.reshape((-1, 1)))
-                        rew = self.rew_rms.normalize(rew)
+                    self.rew_rms.update(rew.reshape((-1, 1)))
+                    rew = self.rew_rms.normalize(rew)
                 sample_rew_mean += rew.mean().item()
                 sample_rew_var += rew.var().item()
                 sample_obs_mean += obs.mean(dim=0).mean().item()
@@ -812,7 +810,7 @@ class FOWM:
                 "policy_discounted_loss": mean_policy_discounted_loss,
                 "best_policy_loss": self.best_policy_loss,
                 "episode_lengths": mean_episode_length,
-                "ac_std": ac_stddev,
+                "actor_std": ac_stddev,
                 "actor_grad_norm": self.actor_grad_norm_before_clip,
                 "critic_grad_norm": critic_grad_norm,
                 "wm_grad_norm": wm_grad_norm,
@@ -934,6 +932,13 @@ class FOWM:
             td = torch.load(path)
 
             # fetch stats for normalizing
+            if self.obs_rms:
+                obs = td["obs"]
+                # NOTE: if this fails probably load wrong data
+                obs = obs.reshape((-1, self.num_obs))
+                obs = torch.nan_to_num(obs)
+                self.obs_rms.update(obs)
+
             if self.rew_rms:
                 rew = td["reward"]
                 rew = rew.reshape((-1, 1))
@@ -945,9 +950,10 @@ class FOWM:
         print(f"Pretraining world model for {num_iters} iters")
         for i in range(0, num_iters):
             obs, act, rew, term = self.buffer.sample()
-            with torch.no_grad():
-                if self.rew_rms:
-                    rew = self.rew_rms.normalize(rew)
+            if self.obs_rms:
+                obs = self.obs_rms.normalize(obs)
+            if self.rew_rms:
+                rew = self.rew_rms.normalize(rew)
             self.wm_optimizer.zero_grad()
             loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
                 obs, act, rew, term

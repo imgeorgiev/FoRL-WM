@@ -37,7 +37,7 @@ class WorldModel(nn.Module):
         observation_dim,
         action_dim,
         latent_dim,
-        mlp_dim,
+        units,
         simnorm_dim,
         action_dims=None,
         num_bins=None,
@@ -54,25 +54,25 @@ class WorldModel(nn.Module):
                 self._action_masks[i, : action_dims[i]] = 1.0
         self._encoder = mlp(
             observation_dim + task_dim,
-            1 * [256],
+            units,
             latent_dim,
             act=SimNorm(simnorm_dim),
         )
         self._dynamics = mlp(
             latent_dim + action_dim + task_dim,
-            2 * [mlp_dim],
+            units,
             latent_dim,
             act=SimNorm(simnorm_dim),
         )
         self._reward = mlp(
             latent_dim + action_dim + task_dim,
-            2 * [mlp_dim],
+            units,
             # max(num_bins, 1),
             1,
         )
         self._terminate = mlp(
             latent_dim + action_dim + task_dim,
-            2 * [mlp_dim],
+            units,
             1,
             act=nn.Sigmoid(),
         )

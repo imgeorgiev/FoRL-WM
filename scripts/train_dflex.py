@@ -55,6 +55,12 @@ def train(cfg: DictConfig):
 
     seeding(cfg.general.seed, False)
 
+    if "SHAC" in cfg.alg._target_ or "AHAC" in cfg.alg._target_:
+        cfg.env.config.no_grad = False
+    else:
+        cfg.env.config.no_grad = True
+    print(f"Running sim with no_grad={cfg.env.config.no_grad}")
+
     env = instantiate(cfg.env.config, logdir=logdir)
     print("num_envs = ", env.num_envs)
     print("num_actions = ", env.num_actions)

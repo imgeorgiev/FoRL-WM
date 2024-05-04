@@ -10,17 +10,10 @@ critic_config:
   _target_: forl.models.critic.CriticMLP
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
   activation_class: nn.Mish
-model_config:
-  _target_: forl.models.mlp.MLP
-  units: [400, 200]
-reward_config:
-  _target_: forl.models.mlp.MLP
-  units: [400, 200]
-terminate_config:
-  _target_: forl.models.mlp.MLP
-  units: [400, 200]
-  activation_cfg_last:
-    _target_: torch.nn.Sigmoid
+world_model_config:
+  _target_: forl.models.world_model.WorldModel
+  units: [512, 512]
+  simnorm_dim: 8
 num_critics: 3
 latent_dim: 512
 actor_lr: ${resolve_child:2e-3,${env.shac},actor_lr}
