@@ -47,6 +47,7 @@ class AHAC:
         critic_method: str = "td-lambda",
         save_interval: int = 500,  # how often to save policy
         device: str = "cuda",
+        log: bool = False,
     ):
         # sanity check parameters
         assert horizon_min > 0
@@ -99,6 +100,7 @@ class AHAC:
         self.critic_grad_norm = critic_grad_norm
         self.save_interval = save_interval
 
+        self.log = log
         self.log_dir = logdir
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -665,7 +667,8 @@ class AHAC:
                 "early_termination": self.early_termination,
             }
             metrics = filter_dict(metrics)
-            wandb.log(metrics, step=self.step_count)
+            if self.log:
+                wandb.log(metrics, step=self.step_count)
 
             print(
                 "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}".format(

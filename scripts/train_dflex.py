@@ -32,9 +32,6 @@ def create_wandb_run(wandb_cfg, job_config, run_id=None):
         config=job_config,
         group=wandb_cfg.group,
         entity=wandb_cfg.entity,
-        sync_tensorboard=False,
-        monitor_gym=True,
-        save_code=True,
         name=name,
         notes=notes,
         id=run_id,
@@ -66,7 +63,7 @@ def train(cfg: DictConfig):
     print("num_actions = ", env.num_actions)
     print("num_obs = ", env.num_obs)
 
-    agent = instantiate(cfg.alg, env=env, logdir=logdir)
+    agent = instantiate(cfg.alg, env=env, logdir=logdir, log=cfg.general.run_wandb)
 
     if cfg.general.checkpoint:
         agent.load(cfg.general.checkpoint)
