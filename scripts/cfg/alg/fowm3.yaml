@@ -13,6 +13,7 @@ critic_config:
 world_model_config:
   _target_: forl.models.world_model.WorldModel
   units: [512, 512]
+  encoder_units: [256]
   simnorm_dim: 8
 num_critics: 3
 latent_dim: 512

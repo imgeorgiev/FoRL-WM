@@ -38,6 +38,7 @@ class WorldModel(nn.Module):
         action_dim,
         latent_dim,
         units,
+        encoder_units,
         simnorm_dim,
         action_dims=None,
         num_bins=None,
@@ -54,7 +55,7 @@ class WorldModel(nn.Module):
                 self._action_masks[i, : action_dims[i]] = 1.0
         self._encoder = mlp(
             observation_dim + task_dim,
-            units,
+            encoder_units,
             latent_dim,
             act=SimNorm(simnorm_dim),
         )

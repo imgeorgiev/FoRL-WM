@@ -244,6 +244,11 @@ class FOWM:
         # timer
         self.time_report = TimeReport()
 
+        # save initial policy for reproducibility
+        self.save("init_policy")
+        # unit test-ish that we can load the policy
+        self.load(f"{self.log_dir}/init_policy.pt")
+
     @property
     def mean_horizon(self):
         return self.horizon_length_meter.get_mean()
@@ -556,8 +561,6 @@ class FOWM:
 
     def train(self):
 
-        self.save("init_policy")
-
         self.start_time = time.time()
 
         # add timers
@@ -861,8 +864,13 @@ class FOWM:
             {
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
+                "world_model": self.wm.state_dict(),
                 "obs_rms": self.obs_rms,
+                "rew_rms": self.rew_rms,
                 "ret_rms": self.ret_rms,
+                "actor_opt": self.actor_optimizer.state_dict(),
+                "critic_opt": self.critic_optimizer.state_dict(),
+                "world_model_opt": self.wm_optimizer.state_dict(),
             },
             os.path.join(self.log_dir, "{}.pt".format(filename)),
         )
@@ -874,9 +882,16 @@ class FOWM:
         self.actor.to(self.device)
         self.critic.load_state_dict(checkpoint["critic"])
         self.critic.to(self.device)
+        self.wm.load_state_dict(checkpoint["world_model"])
+        self.wm.to(self.device)
         self.obs_rms = (
             checkpoint["obs_rms"].to(self.device)
             if checkpoint["obs_rms"] is not None
+            else None
+        )
+        self.rew_rms = (
+            checkpoint["rew_rms"].to(self.device)
+            if checkpoint["rew_rms"] is not None
             else None
         )
         self.ret_rms = (
@@ -884,48 +899,13 @@ class FOWM:
             if checkpoint["ret_rms"] is not None
             else None
         )
-
-    def load_wm(self, path):
-        print("Loading world model from", path)
-        checkpoint = torch.load(path)
-        checkpoint = checkpoint["model"]
-        # filter policy away
-        # keys = list(checkpoint.keys())
-        # for key in keys:
-        #     if "_pi" in key or "_Qs" in key:
-        #         del checkpoint[key]
-        new_odict = OrderedDict()
-        for key, value in checkpoint.items():
-            print(key)
-            if "_pi" in key:
-                pass
-            elif "_Qs" in key:
-                pass
-            else:
-                if "_encoder" in key:
-                    key = key.replace("state.", "")
-                new_odict[key] = value
-            # new_odict[key.replace("wm.", "")] = value
-        missing = [
-            "_terminate.0.weight",
-            "_terminate.0.bias",
-            "_terminate.0.ln.weight",
-            "_terminate.0.ln.bias",
-            "_terminate.1.weight",
-            "_terminate.1.bias",
-            "_terminate.1.ln.weight",
-            "_terminate.1.ln.bias",
-            "_terminate.2.weight",
-            "_terminate.2.bias",
-            # "_terminate.2.ln.weight",
-            # "_terminate.2.ln.bias",
-        ]
-        for k in missing:
-            replace_key = k.replace("_terminate", "_reward")
-            new_odict[k] = torch.zeros_like(new_odict[replace_key])
-        new_odict["_terminate.2.ln.weight"] = torch.zeros((1,))
-        new_odict["_terminate.2.ln.bias"] = torch.zeros((1,))
-        self.wm.load_state_dict(new_odict)
+        # need to also load last learning rates as they will be used to continue training
+        self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
+        self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
+        self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
+        self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
+        self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
+        self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
 
     def pretrain_wm(self, paths, num_iters):
         if type(paths) != List:
@@ -968,6 +948,8 @@ class FOWM:
                 f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}  TL:{term_loss:.3f}",
                 end="\r",
             )
+        self.wm_bootstrapped = True
+        self.save("pretrained")
 
     def compute_wm_loss(self, obs, act, rew, term):
         if term.dtype == torch.bool:
