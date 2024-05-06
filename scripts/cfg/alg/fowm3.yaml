@@ -19,9 +19,9 @@ num_critics: 3
 latent_dim: 512
 actor_lr: ${resolve_child:2e-3,${env.shac},actor_lr}
 critic_lr: ${resolve_child:5e-4,${env.shac},critic_lr}
-model_lr: 2e-3
+model_lr: 3e-4
 lr_schedule: linear
-obs_rms: True
+obs_rms: False
 rew_rms: True
 ret_rms: False
 critic_iterations: 16

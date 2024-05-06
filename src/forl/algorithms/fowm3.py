@@ -931,6 +931,8 @@ class FOWM:
             self.buffer.add_batch(td)
 
         print(f"Pretraining world model for {num_iters} iters")
+        log_freq = num_iters // 100
+        save_at = num_iters // 5
         for i in range(0, num_iters):
             obs, act, rew, term = self.buffer.sample()
             if self.obs_rms:
@@ -948,6 +950,21 @@ class FOWM:
                 f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}  TL:{term_loss:.3f}",
                 end="\r",
             )
+            if i % log_freq == 0 and self.log:
+                metrics = {
+                    "pretrain/wm_loss": loss.item(),
+                    "pretrain/wm_grad_norm": wm_grad_norm,
+                    "pretrain/dynamics_loss": dyn_loss,
+                    "pretrain/reward_loss": rew_loss,
+                    "pretrain/term_loss": term_loss,
+                }
+                wandb.log(metrics, step=i)
+                print(
+                    f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}  TL:{term_loss:.3f}",
+                )
+
+            if i % save_at == 0:
+                self.save(f"pretrained_{i}")
         self.wm_bootstrapped = True
         self.save("pretrained")
 
