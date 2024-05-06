@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-
-from common.layers import mlp
-from .mlp import SimNorm
+from .mlp import SimNorm, mlp
 
 
 def weight_init(m):
@@ -39,7 +37,10 @@ class WorldModel(nn.Module):
         latent_dim,
         units,
         encoder_units,
-        simnorm_dim,
+        encoder,
+        dynamics,
+        reward,
+        # last_act=SimNorm(simnorm_dim=8),
         action_dims=None,
         num_bins=None,
         multitask=False,
@@ -57,25 +58,30 @@ class WorldModel(nn.Module):
             observation_dim + task_dim,
             encoder_units,
             latent_dim,
-            act=SimNorm(simnorm_dim),
+            last_layer=encoder["last_layer"],
+            last_layer_kwargs=encoder["last_layer_kwargs"],
         )
         self._dynamics = mlp(
             latent_dim + action_dim + task_dim,
             units,
             latent_dim,
-            act=SimNorm(simnorm_dim),
+            last_layer=dynamics["last_layer"],
+            last_layer_kwargs=dynamics["last_layer_kwargs"],
         )
         self._reward = mlp(
             latent_dim + action_dim + task_dim,
             units,
             # max(num_bins, 1),
             1,
+            last_layer=reward["last_layer"],
+            last_layer_kwargs=reward["last_layer_kwargs"],
         )
         self._terminate = mlp(
             latent_dim + action_dim + task_dim,
             units,
             1,
-            act=nn.Sigmoid(),
+            last_layer="normedlinear",
+            last_layer_kwargs={"act": nn.Sigmoid()},
         )
         self.apply(weight_init)
         zero_([self._reward[-1].weight])

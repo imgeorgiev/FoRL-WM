@@ -14,7 +14,34 @@ world_model_config:
   _target_: forl.models.world_model.WorldModel
   units: [512, 512]
   encoder_units: [256]
-  simnorm_dim: 8
+  # last_layer: linear # or spectralnormlinear
+  # last_layer_kwargs: {}
+  # last_layer: normedlinear
+  # last_layer_kwargs:
+  #   act:
+  #     _target_: forl.models.mlp.SimNorm
+  #     simnorm_dim: 8
+  # last_layer: spectralnormlinear
+  # last_layer_kwargs:
+  #   layer_norm: True
+  #   act:
+  #     _target_: forl.models.mlp.SimNorm
+  #     simnorm_dim: 8
+  encoder:
+    last_layer: normedlinear
+    last_layer_kwargs:
+      act:
+        _target_: forl.models.mlp.SimNorm
+        simnorm_dim: 8
+  dynamics:
+    last_layer: normedlinear
+    last_layer_kwargs:
+      act:
+        _target_: forl.models.mlp.SimNorm
+        simnorm_dim: 8
+  reward:
+    last_layer: linear
+    last_layer_kwargs: {}
 num_critics: 3
 latent_dim: 512
 actor_lr: ${resolve_child:2e-3,${env.shac},actor_lr}

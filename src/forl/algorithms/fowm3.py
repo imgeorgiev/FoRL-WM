@@ -768,10 +768,7 @@ class FOWM:
                 tot_dynamics_loss += dyn_loss
                 tot_reward_loss += rew_loss
                 tot_term_loss += term_loss
-                print(
-                    f"wm iter {j + 1}/{self.wm_iterations}, loss = {loss:.2f}",
-                    end="\r",
-                )
+                print(f"wm iter {i+1}/{iters}, loss = {loss:.2f}", end="\r")
 
                 # normalize for logging; TODO simplify
                 tot_wm_loss /= iters
