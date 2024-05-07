@@ -8,6 +8,12 @@ from forl.models.mlp import mlp, SimNorm
 from torch.optim import Adam
 import torch.nn as nn
 
+from IPython.core import ultratb
+import sys
+
+# For debugging
+sys.excepthook = ultratb.FormattedTB(mode="Plain", color_scheme="Neutral", call_pdb=1)
+
 sns.set()
 torch.manual_seed(0)
 
@@ -32,15 +38,14 @@ x, v, a, t = 0, 10, 1, 2
 yy = -f(x, v, xx, a, t)
 std = 0.1  # noise for policy
 N = 5000  # data samples
-iters = 300  # for optimization
+epochs = 100  # for optimization
+batch_size = 56
 lr = 2e-3
 
 # train simply MLP
 torch.manual_seed(0)
-model0 = mlp(1, [32, 32], 1, act=nn.ReLU)
+model0 = mlp(1, [32, 32], 1, last_layer="linear", last_layer_kwargs={})
 opt = Adam(model0.parameters(), lr=lr)
-epochs = 100
-batch_size = 50
 steps = samples // batch_size
 print("Training...")
 model0.train()
@@ -61,10 +66,17 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
         tepoch.set_postfix(loss=epoch_loss)
 
 
-# train simply MLP
+# train TDMPC model
 torch.manual_seed(0)
-model = mlp(1, [32, 32], 1, norm=True)
-opt = Adam(model.parameters(), lr=lr)
+model = mlp(
+    1,
+    [32],
+    32,
+    last_layer="normedlinear",
+    last_layer_kwargs={"act": SimNorm(8)},
+)
+decoder = mlp(32, [], 1, last_layer="linear", last_layer_kwargs={})
+opt = Adam([{"params": model.parameters()}, {"params": decoder.parameters()}], lr=lr)
 print("Training...")
 model.train()
 with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
@@ -74,18 +86,27 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
             idx = torch.randint(0, samples, (batch_size,))
             _xx = xx[idx].unsqueeze(1)
             _yy = yy[idx].unsqueeze(1)
-            pred = model(_xx)
+            pred = decoder(model(_xx))
             loss = torch.mean((pred - _yy) ** 2)
             model.zero_grad()
+            # decoder.zero_grad()
             loss.backward()
             opt.step()
             epoch_loss += loss.item()
         epoch_loss /= steps
         tepoch.set_postfix(loss=epoch_loss)
 
-# train simply MLP
+model1 = lambda x: decoder(model(x))
+
+# Spectrum normalized MLP
 torch.manual_seed(0)
-model2 = mlp(1, [32, 32], 1, spectral=True)
+model2 = mlp(
+    1,
+    [32, 32],
+    1,
+    last_layer="spectralnormlinear",
+    last_layer_kwargs={"layer_norm": False},
+)
 opt = Adam(model2.parameters(), lr=lr)
 print("Training...")
 model2.train()
@@ -108,10 +129,9 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
 
 print("Plotting the problem landscape")
 ax.plot(xx, -f(x, v, xx, a, t), label=r"$J(\theta)$")
-models = {0: "MLP", 1: "TDMPC MLP", 2: "SNorm MLP"}
-for i, model in enumerate([model0, model, model2]):
-    model.eval()
-    est = model(xx.unsqueeze(1)).detach().numpy()
+models = {0: "MLP", 1: "SimNorm MLP", 2: "Spectral MLP"}
+for i, m in enumerate([model0, model1, model2]):
+    est = m(xx.unsqueeze(1)).detach().numpy()
     ax.plot(xx, est, label=models[i])
 
 ax.set_xlabel(r"$\theta$")
