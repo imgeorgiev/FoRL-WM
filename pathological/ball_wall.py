@@ -29,8 +29,6 @@ def f(x, v, th, a, t):
     return out
 
 
-fig, ax = plt.subplots(1, 1, figsize=(4, 3))
-
 # simulation variables
 samples = 1000
 xx = torch.linspace(-torch.pi, torch.pi, samples)
@@ -89,7 +87,6 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
             pred = decoder(model(_xx))
             loss = torch.mean((pred - _yy) ** 2)
             model.zero_grad()
-            # decoder.zero_grad()
             loss.backward()
             opt.step()
             epoch_loss += loss.item()
@@ -98,44 +95,38 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
 
 model1 = lambda x: decoder(model(x))
 
-# Spectrum normalized MLP
-torch.manual_seed(0)
-model2 = mlp(
-    1,
-    [32, 32],
-    1,
-    last_layer="spectralnormlinear",
-    last_layer_kwargs={"layer_norm": False},
-)
-opt = Adam(model2.parameters(), lr=lr)
-print("Training...")
-model2.train()
-with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
-    for epoch in tepoch:
-        epoch_loss = 0
-        for step in range(steps):
-            idx = torch.randint(0, samples, (batch_size,))
-            _xx = xx[idx].unsqueeze(1)
-            _yy = yy[idx].unsqueeze(1)
-            pred = model2(_xx)
-            loss = torch.mean((pred - _yy) ** 2)
-            model2.zero_grad()
-            loss.backward()
-            opt.step()
-            epoch_loss += loss.item()
-        epoch_loss /= steps
-        tepoch.set_postfix(loss=epoch_loss)
-
+fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
 
 print("Plotting the problem landscape")
-ax.plot(xx, -f(x, v, xx, a, t), label=r"$J(\theta)$")
+ax1.plot(xx, -f(x, v, xx, a, t), label=r"Ground Truth")
 models = {0: "MLP", 1: "SimNorm MLP", 2: "Spectral MLP"}
-for i, m in enumerate([model0, model1, model2]):
-    est = m(xx.unsqueeze(1)).detach().numpy()
-    ax.plot(xx, est, label=models[i])
+predictions = {}
+for i, m in enumerate([model0, model1]):
+    est = m(xx.unsqueeze(1)).flatten()
+    ax1.plot(xx, est.detach(), label=models[i])
+    error = torch.mean((est - yy) ** 2).item() ** 0.5
+    print(f"Model has {error:.3f} approx error")
+    predictions[i] = est
 
-ax.set_xlabel(r"$\theta$")
-ax.legend()
+opt_value = torch.min(yy).item()
+plt.plot(xx[0], yy[0], "x", color="black")
+ii = 328
+plt.plot(xx[ii], yy[ii], "x", color="tab:blue")
+print(f"Opt error GT {yy[ii]-opt_value}")
+est = predictions[0]
+argmin = torch.argmin(est[: len(xx) // 2])
+plt.plot(xx[argmin], est.detach()[argmin], color="tab:orange", marker="x")
+plt.plot(xx[ii], yy[ii], "x", color="tab:blue")
+print(f"Opt error MLP {est[argmin]-opt_value}")
+est = predictions[1]
+argmin = torch.argmin(est)
+plt.plot(xx[argmin], est.detach()[argmin], color="tab:green", marker="x")
+print(f"Opt error MLP SymNorm {est[argmin]-opt_value}")
+
+ax1.set_ylabel(r"$J(\theta)$")
+ax1.set_xlabel(r"$\theta$")
+ax1.legend()
+
 plt.tight_layout()
 plt.savefig("ball_wall.pdf", bbox_inches="tight")
-plt.show()
+# plt.show()
