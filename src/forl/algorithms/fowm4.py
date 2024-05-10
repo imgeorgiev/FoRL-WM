@@ -66,6 +66,7 @@ class FOWM:
         device: str = "cuda",
         save_data: bool = False,
         log: bool = False,
+        with_terminate: bool = False,
     ):
         # sanity check parameters
         assert horizon > 0
@@ -105,6 +106,7 @@ class FOWM:
         self.wm_batch_size = wm_batch_size
         self.wm_grad_norm = wm_grad_norm
         self.wm_bootstrapped = False
+        self.with_terminate = with_terminate
 
         self.obs_rms = None
         if obs_rms:
@@ -253,7 +255,7 @@ class FOWM:
     def mean_horizon(self):
         return self.horizon_length_meter.get_mean()
 
-    def compute_actor_loss(self, deterministic=False):
+    def compute_actor_loss(self, obs):
         rew_acc = torch.zeros(
             (self.horizon + 1, self.num_envs), dtype=torch.float32, device=self.device
         )
@@ -263,26 +265,12 @@ class FOWM:
         )
 
         actor_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
-        primal = None
-
-        # initialize trajectory to cut off gradients between epochs
-        try:
-            # Note this doesn't reset the env, just re-inits the gradients
-            obs = self.env.reset(grads=True)
-        except:
-            print_error(
-                "Your environment should have a reset method that accepts grads=True"
-            )
-            raise AttributeError
 
         # update and normalize obs
         if self.obs_rms:
             obs = self.obs_rms.normalize(obs)
 
         z = self.wm.encode(obs, task=None)
-
-        # keeps track of the current length of the rollout
-        rollout_len = torch.zeros((self.num_envs,), device=self.device)
 
         # Start short horizon rollout
         for i in range(self.horizon):
@@ -291,81 +279,18 @@ class FOWM:
                 self.obs_buf[i] = z.clone()
 
             # act in environment
-            actions = self.actor(z, deterministic=deterministic)
-            actions = torch.tanh(actions)
+            act = torch.tanh(self.actor(z, deterministic=False))
             # TODO really move tanh inside actor
-            z, rew, term = self.wm.step(z, actions, task=None)
-            obs, gt_rew, gt_done, info = self.env.step(actions)
-            term = info["termination"]
-            gt_term = info["termination"]
-            gt_trunc = info["truncation"]
-            real_obs = info["obs_before_reset"]
-            primal = info["primal"]
-
-            # log data to buffer
-            with torch.no_grad():
-
-                for j in range(self.num_envs):
-                    td = TensorDict(
-                        dict(
-                            obs=real_obs[j].unsqueeze(0),
-                            action=actions[j].unsqueeze(0),
-                            reward=gt_rew[j][None],
-                            term=gt_term[j][None],
-                        ),
-                        (1,),
-                    )
-                    self.episode_data[j].append(td)
-
-                gt_done_env_ids = gt_done.nonzero(as_tuple=False).squeeze(-1)
-                for j in gt_done_env_ids:
-                    td = torch.cat(self.episode_data[j])
-                    self.buffer.add(td)
-
-                    # reinint data tracker with with nan action and rewards
-                    a = torch.full_like(torch.zeros(1, self.num_actions), torch.nan).to(
-                        self.device
-                    )
-                    r = torch.full_like(
-                        torch.zeros(
-                            1,
-                        ),
-                        torch.nan,
-                    ).to(self.device)
-                    tt = torch.full_like(
-                        torch.zeros(
-                            1,
-                        ),
-                        torch.nan,
-                        dtype=torch.bool,
-                    ).to(self.device)
-                    td = TensorDict(
-                        dict(obs=obs[j].unsqueeze(0), action=a, reward=r, term=tt),
-                        (1,),
-                    )
-                    self.episode_data[j] = [td]
-
-            with torch.no_grad():
-                raw_rew = gt_rew.clone()
-
-            # update and normalize obs
-            if self.obs_rms:
-                obs = self.obs_rms.normalize(obs)
-
-            self.episode_length += 1
-            rollout_len += 1
-
-            # sanity check; remove?
-            if (~torch.isfinite(obs)).sum() > 0:
-                print_warning("Got inf obs")
+            z, rew, term = self.wm.step(z, act, task=None)
 
             next_values[i + 1] = self.critic(z).min(dim=0).values.squeeze()
 
             # handle terminated environments which stopped for some bad reason
             # since the reason is bad we set their value to 0
-            term_env_ids = term.nonzero(as_tuple=False).squeeze(-1)
-            for id in term_env_ids:
-                next_values[i + 1, id] = 0.0
+            env_ids = term.nonzero(as_tuple=False).squeeze(-1)
+            if self.with_terminate:
+                for id in env_ids:
+                    next_values[i + 1, id] = 0.0
 
             # sanity check
             if (next_values > 1e6).sum() > 0 or (next_values < -1e6).sum() > 0:
@@ -374,29 +299,19 @@ class FOWM:
 
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
 
-            done = gt_term | gt_trunc  # NOTE TEMPORARY
-            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-            gt_done = gt_term | gt_trunc
-            gt_done_env_ids = gt_done.nonzero(as_tuple=False).squeeze(-1)
-
             # for all done envs we reset observations and cut off gradients
             # Note this is important to do after critic next value compuataion!
             # TODO should I do the below conditionally?
             gt_z = self.wm.encode(obs, task=None)
-            z = torch.where(done[..., None], gt_z, z)
+            z = torch.where(term[..., None], gt_z, z)
 
-            self.early_termination += torch.sum(term).item()
-            self.episode_end += torch.sum(gt_trunc).item()
-
-            if i < self.horizon - 1:
+            if (i < self.horizon - 1) and self.with_terminate:
                 # first terminate all rollouts which are 'done'
                 returns = (
-                    -rew_acc[i + 1, done_env_ids]
-                    - self.gamma
-                    * gamma[done_env_ids]
-                    * next_values[i + 1, done_env_ids]
+                    -rew_acc[i + 1, env_ids]
+                    - self.gamma * gamma[env_ids] * next_values[i + 1, env_ids]
                 )
-                actor_loss[done_env_ids] += returns
+                actor_loss[env_ids] += returns
             else:
                 # terminate all envs because we reached the end of our rollout
                 returns = (
@@ -408,45 +323,19 @@ class FOWM:
             gamma = gamma * self.gamma
 
             # clear up gamma and rew_acc for done envs
-            gamma[done_env_ids] = 1.0
-            rew_acc[i + 1, done_env_ids] = 0.0
+            if self.with_terminate:
+                gamma[env_ids] = 1.0
+                rew_acc[i + 1, env_ids] = 0.0
 
             # collect data for critic training
             with torch.no_grad():
                 self.rew_buf[i] = rew.clone()
                 if i < self.horizon - 1:
-                    self.done_mask[i] = gt_done.clone().to(torch.float32)
+                    self.done_mask[i] = term.clone().to(torch.float32)
                 else:
                     self.done_mask[i, :] = 1.0
-                self.term_buf[i] = gt_term.clone().to(torch.float32)
+                self.term_buf[i] = term.clone().to(torch.float32)
                 self.next_values[i] = next_values[i + 1].clone()
-
-            # collect episode loss
-            with torch.no_grad():
-                # collect episode stats
-                self.episode_loss -= raw_rew
-                self.episode_discounted_loss -= self.episode_gamma * raw_rew
-                self.episode_primal -= primal
-                self.episode_gamma *= self.gamma
-
-                # dump data from done episodes
-                self.episode_loss_meter.update(self.episode_loss[gt_done_env_ids])
-                self.episode_discounted_loss_meter.update(
-                    self.episode_discounted_loss[gt_done_env_ids]
-                )
-                self.episode_primal_meter.update(self.episode_primal[gt_done_env_ids])
-                self.episode_length_meter.update(self.episode_length[gt_done_env_ids])
-                self.horizon_length_meter.update(rollout_len[gt_done_env_ids])
-
-                # reset trackers
-                rollout_len[gt_done_env_ids] = 0
-                self.episode_loss[gt_done_env_ids] = 0.0
-                self.episode_discounted_loss[gt_done_env_ids] = 0.0
-                self.episode_primal[gt_done_env_ids] = 0.0
-                self.episode_length[gt_done_env_ids] = 0
-                self.episode_gamma[gt_done_env_ids] = 1.0
-
-        self.horizon_length_meter.update(rollout_len)
 
         if self.ret_rms is not None:
             self.ret_rms.update(actor_loss)
@@ -454,11 +343,7 @@ class FOWM:
         else:
             actor_loss /= self.horizon
 
-        actor_loss = actor_loss.mean()
-
-        self.step_count += self.horizon * self.num_envs
-
-        return actor_loss
+        return actor_loss.mean()
 
     @torch.no_grad()
     def eval(self, num_games, deterministic=True):
@@ -553,11 +438,80 @@ class FOWM:
         else:
             raise NotImplementedError
 
+    @torch.no_grad
+    def add_wm_buffer(self, obs, act, rew, term, done):
+        for j in range(self.num_envs):
+            td = TensorDict(
+                dict(
+                    obs=obs[j].unsqueeze(0),
+                    action=act[j].unsqueeze(0),
+                    reward=rew[j][None],
+                    term=term[j][None],
+                ),
+                (1,),
+            )
+            self.episode_data[j].append(td)
+
+        done_ids = done.nonzero(as_tuple=False).squeeze(-1)
+        for j in done_ids:
+            td = torch.cat(self.episode_data[j])
+            self.buffer.add(td)
+
+            # reinint data tracker with with nan action and rewards
+            # TODO this code is repetitive. Can wrap it in a function
+            a = torch.full_like(torch.zeros(1, self.num_actions), torch.nan)
+            r = torch.full_like(
+                torch.zeros(
+                    1,
+                ),
+                torch.nan,
+            ).to(self.device)
+            t = torch.full_like(
+                torch.zeros(
+                    1,
+                ),
+                torch.nan,
+                dtype=torch.bool,
+            )
+            td = TensorDict(
+                dict(obs=obs[j].unsqueeze(0), action=a, reward=r, term=t),
+                (1,),
+            ).to(self.device)
+            self.episode_data[j] = [td]
+
     def compute_critic_loss(self, batch_sample):
         predicted_values = self.critic(batch_sample["obs"]).squeeze(-2)
         target_values = batch_sample["target_values"]
         critic_loss = ((predicted_values - target_values) ** 2).mean()
         return critic_loss
+
+    def update_lrs(self, epoch):
+        # learning rate schedule
+        if self.lr_schedule == "linear":
+            # actor learning rate
+            actor_lr = (1e-5 - self.actor_lr) * float(
+                epoch / self.max_epochs
+            ) + self.actor_lr
+            for param_group in self.actor_optimizer.param_groups:
+                param_group["lr"] = actor_lr
+
+            # critic learning rate
+            critic_lr = (1e-5 - self.critic_lr) * float(
+                epoch / self.max_epochs
+            ) + self.critic_lr
+            for param_group in self.critic_optimizer.param_groups:
+                param_group["lr"] = critic_lr
+
+            # world model learning rate
+            model_lr = (1e-5 - self.model_lr) * float(
+                epoch / self.max_epochs
+            ) + self.model_lr
+            for param_group in self.wm_optimizer.param_groups:
+                param_group["lr"] = model_lr
+
+            return actor_lr, critic_lr, model_lr
+        else:
+            return self.actor_lr, self.critic_lr, self.model_lr
 
     def train(self):
 
@@ -593,101 +547,54 @@ class FOWM:
         )
 
         with torch.no_grad():
-            # save data with nan action and rewards
+            # Initialize data tracking for world model buffer
 
+            # TODO why is black being stupid here?
+            act = torch.full_like(torch.zeros(1, self.num_actions), torch.nan)
+            rew = torch.full_like(
+                torch.zeros(
+                    1,
+                ),
+                torch.nan,
+            )
+            term = torch.full_like(
+                torch.zeros(
+                    1,
+                ),
+                torch.nan,
+                dtype=torch.bool,
+            )
             for id in range(self.num_envs):
-                act = torch.full_like(torch.zeros(1, self.num_actions), torch.nan).to(
-                    self.device
-                )
-                rew = torch.full_like(
-                    torch.zeros(
-                        1,
-                    ),
-                    torch.nan,
-                ).to(self.device)
-                term = torch.full_like(
-                    torch.zeros(
-                        1,
-                    ),
-                    torch.nan,
-                    dtype=torch.bool,
-                ).to(self.device)
                 td = TensorDict(
                     dict(obs=obs[id].unsqueeze(0), action=act, reward=rew, term=term),
                     (1,),
-                )
+                ).to(self.device)
                 self.episode_data[id] = [td]
-
-        def actor_closure():
-            self.actor_optimizer.zero_grad()
-
-            self.time_report.start_timer("compute actor loss")
-
-            self.time_report.start_timer("forward simulation")
-            actor_loss = self.compute_actor_loss()
-            self.time_report.end_timer("forward simulation")
-
-            self.time_report.start_timer("backward simulation")
-            actor_loss.backward()
-            self.time_report.end_timer("backward simulation")
-
-            self.actor_grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
-            self.actor_grad_norm_after_clip = clip_grad_norm_(
-                self.actor.parameters(), self.actor_grad_norm
-            )
-
-            # sanity check
-            if torch.isnan(self.actor_grad_norm_before_clip):
-                print_error("NaN gradient")
-                raise ValueError
-
-            self.time_report.end_timer("compute actor loss")
-
-            return actor_loss
 
         # main training process
         for epoch in range(self.max_epochs):
 
-            if self.buffer.num_eps == 0:
-                with torch.no_grad():
-                    self.compute_actor_loss()
-                continue
-
             time_start_epoch = time.time()
 
-            # learning rate schedule
-            if self.lr_schedule == "linear":
-                # actor learning rate
-                actor_lr = (1e-5 - self.actor_lr) * float(
-                    epoch / self.max_epochs
-                ) + self.actor_lr
-                for param_group in self.actor_optimizer.param_groups:
-                    param_group["lr"] = actor_lr
-                lr = actor_lr
-
-                # critic learning rate
-                critic_lr = (1e-5 - self.critic_lr) * float(
-                    epoch / self.max_epochs
-                ) + self.critic_lr
-                for param_group in self.critic_optimizer.param_groups:
-                    param_group["lr"] = critic_lr
-
-                # world model learning rate
-                model_lr = (1e-5 - self.model_lr) * float(
-                    epoch / self.max_epochs
-                ) + self.model_lr
-                for param_group in self.wm_optimizer.param_groups:
-                    param_group["lr"] = model_lr
-            else:
-                lr = self.actor_lr
+            actor_lr, critic_lr, model_lr = self.update_lrs(epoch)
 
             # train actor
             self.time_report.start_timer("actor training")
-            actor_loss = self.actor_optimizer.step(actor_closure)
+            self.actor_optimizer.zero_grad()
+            self.time_report.start_timer("forward simulation")
+            actor_loss = self.compute_actor_loss(obs.detach())
+            self.time_report.end_timer("forward simulation")
+            self.time_report.start_timer("backward simulation")
+            actor_loss.backward()
+            self.time_report.end_timer("backward simulation")
+            self.actor_grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
+            self.actor_grad_norm_after_clip = clip_grad_norm_(
+                self.actor.parameters(), self.actor_grad_norm
+            )
+            self.actor_optimizer.step()
             self.time_report.end_timer("actor training")
 
-            # train critic
-            # prepare dataset
+            # prepare critic dataset
             self.time_report.start_timer("prepare critic dataset")
             with torch.no_grad():
                 self.compute_target_values()
@@ -730,55 +637,59 @@ class FOWM:
 
             self.time_report.end_timer("critic training")
 
+            # Take an action in the environment
+            with torch.no_grad():
+                z = self.wm.encode(obs, task=None)
+                act = torch.tanh(self.actor(z, deterministic=False))
+                obs, rew, done, info = self.env.step(act)
+            real_obs = info["obs_before_reset"]
+            term = info["termination"]
+            primal = info["primal"]
+            self.step_count += self.num_envs
+
+            # Record data
+            self.add_wm_buffer(real_obs, act, rew, term, done)
+
+            # log statistics
+            self.record_episode_stats(rew, primal, done)
+
             self.time_report.start_timer("world model training")
 
             # world model training!
             tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = 0.0
-            sample_rew_mean = sample_rew_var = 0.0
-            sample_obs_mean = sample_obs_var = 0.0
-            if self.wm_bootstrapped:
-                iters = self.wm_iterations
-            else:
-                iters = self.env.episode_length
-                print(f"training wm for {iters} iterations")
-                self.wm_bootstrapped = True
+            sample_stats = []
+            tot_wm_grad_norm = 0.0
+            # TODO make below a paremeter and probably steps
+            if self.buffer.num_eps > 100:
+                if self.wm_bootstrapped:
+                    iters = self.wm_iterations
+                else:
+                    iters = self.env.episode_length
+                    print(f"training wm for {iters} iterations")
+                    self.wm_bootstrapped = True
 
-            for i in range(0, iters):
-                obs, act, rew, term = self.buffer.sample()
-                if self.obs_rms:
-                    self.obs_rms.update(obs.reshape((-1, self.num_obs)))
-                    obs = self.rew_rms.normalize(obs)
+                for i in range(0, iters):
+                    loss, dyn_loss, rew_loss, term_loss, wm_grad_norm, stats = (
+                        self.wm_update()
+                    )
+                    tot_wm_loss += loss.item()
+                    tot_dynamics_loss += dyn_loss
+                    tot_reward_loss += rew_loss
+                    tot_term_loss += term_loss
+                    tot_wm_grad_norm += wm_grad_norm
+                    sample_stats.append(stats)
+                    print(f"wm iter {i+1}/{iters}, loss = {loss:.2f}", end="\r")
 
-                if self.rew_rms:
-                    self.rew_rms.update(rew.reshape((-1, 1)))
-                    rew = self.rew_rms.normalize(rew)
-                sample_rew_mean += rew.mean().item()
-                sample_rew_var += rew.var().item()
-                sample_obs_mean += obs.mean(dim=0).mean().item()
-                sample_obs_var += obs.var(dim=0).mean().item()
-
-                self.wm_optimizer.zero_grad()
-                loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-                    obs, act, rew, term
-                )
-                loss.backward()
-                wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
-                self.wm_optimizer.step()
-                tot_wm_loss += loss.item()
-                tot_dynamics_loss += dyn_loss
-                tot_reward_loss += rew_loss
-                tot_term_loss += term_loss
-                print(f"wm iter {i+1}/{iters}, loss = {loss:.2f}", end="\r")
-
-            # normalize for logging; TODO simplify
-            tot_wm_loss /= iters
-            tot_dynamics_loss /= iters
-            tot_reward_loss /= iters
-            tot_term_loss /= iters
-            sample_rew_mean /= iters
-            sample_rew_var /= iters
-            sample_obs_mean /= iters
-            sample_obs_var /= iters
+                # normalize for logging; TODO simplify
+                tot_wm_loss /= iters
+                tot_dynamics_loss /= iters
+                tot_reward_loss /= iters
+                tot_term_loss /= iters
+                tot_wm_grad_norm /= iters
+                # sample_rew_mean /= iters
+                # sample_rew_var /= iters
+                # sample_obs_mean /= iters
+                # sample_obs_var /= iters
 
             self.time_report.end_timer("world model training")
 
@@ -797,7 +708,9 @@ class FOWM:
                 self.best_policy_loss = mean_policy_loss
 
             metrics = {
-                "actor_lr": lr,
+                "actor_lr": actor_lr,
+                "critic_lr": critic_lr,
+                "wm_lr": model_lr,
                 "actor_loss": actor_loss,
                 "value_loss": value_loss,
                 "wm_loss": tot_wm_loss,
@@ -815,13 +728,13 @@ class FOWM:
                 "actor_std": ac_stddev,
                 "actor_grad_norm": self.actor_grad_norm_before_clip,
                 "critic_grad_norm": critic_grad_norm,
-                "wm_grad_norm": wm_grad_norm,
+                "wm_grad_norm": tot_wm_grad_norm,
                 "episode_end": self.episode_end,
                 "early_termination": self.early_termination,
-                "sample_rew_mean": sample_rew_mean,
-                "sample_rew_var": sample_rew_var,
-                "sample_obs_mean": sample_obs_mean,
-                "sample_obs_var": sample_obs_var,
+                # "sample_rew_mean": sample_rew_mean,
+                # "sample_rew_var": sample_rew_var,
+                # "sample_obs_mean": sample_obs_mean,
+                # "sample_obs_var": sample_obs_var,
             }
             metrics = filter_dict(metrics)
             if self.log:
@@ -856,6 +769,57 @@ class FOWM:
 
         self.save("final_policy")
 
+    def wm_update(self):
+        obs, act, rew, term = self.buffer.sample()
+        if self.obs_rms:
+            self.obs_rms.update(obs.reshape((-1, self.num_obs)))
+            obs = self.rew_rms.normalize(obs)
+
+        if self.rew_rms:
+            self.rew_rms.update(rew.reshape((-1, 1)))
+            rew = self.rew_rms.normalize(rew)
+
+        sample_rew_mean = rew.mean().item()
+        sample_rew_var = rew.var().item()
+        sample_obs_mean = obs.mean(dim=0).mean().item()
+        sample_obs_var = obs.var(dim=0).mean().item()
+        sample_stats = {
+            "rew_mean": sample_rew_mean,
+            "rew_var": sample_rew_var,
+            "obs_mean": sample_obs_mean,
+            "obs_var": sample_obs_var,
+        }
+
+        self.wm_optimizer.zero_grad()
+        loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(obs, act, rew, term)
+        loss.backward()
+        wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
+        self.wm_optimizer.step()
+        return loss, dyn_loss, rew_loss, term_loss, wm_grad_norm, sample_stats
+
+    @torch.no_grad
+    def record_episode_stats(self, rew, primal, done):
+        self.episode_loss -= rew
+        self.episode_discounted_loss -= self.episode_gamma * rew
+        self.episode_primal -= primal
+        self.episode_gamma *= self.gamma
+
+        # dump data from done episodes
+        done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
+        self.episode_loss_meter.update(self.episode_loss[done_env_ids])
+        self.episode_discounted_loss_meter.update(
+            self.episode_discounted_loss[done_env_ids]
+        )
+        self.episode_primal_meter.update(self.episode_primal[done_env_ids])
+        self.episode_length_meter.update(self.episode_length[done_env_ids])
+
+        # reset trackers
+        self.episode_loss[done_env_ids] = 0.0
+        self.episode_discounted_loss[done_env_ids] = 0.0
+        self.episode_primal[done_env_ids] = 0.0
+        self.episode_length[done_env_ids] = 0
+        self.episode_gamma[done_env_ids] = 1.0
+
     def save(self, filename):
         torch.save(
             {
@@ -875,10 +839,10 @@ class FOWM:
     def load(self, path):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
-        self.actor.load_state_dict(checkpoint["actor"])
-        self.actor.to(self.device)
-        self.critic.load_state_dict(checkpoint["critic"])
-        self.critic.to(self.device)
+        # self.actor.load_state_dict(checkpoint["actor"])
+        # self.actor.to(self.device)
+        # self.critic.load_state_dict(checkpoint["critic"])
+        # self.critic.to(self.device)
         self.wm.load_state_dict(checkpoint["world_model"])
         self.wm.to(self.device)
         self.obs_rms = (
