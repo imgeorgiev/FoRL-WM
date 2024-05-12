@@ -886,7 +886,9 @@ class FOWM:
         self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
 
         if buffer:
+            print("Loading buffer too")
             self.buffer.load(path.replace(".pt", ".buffer"))
+            self.buffer._num_eps = 100  # placeholder to avoid initialization
 
     def pretrain_wm(self, paths, num_iters):
         if type(paths) != List:

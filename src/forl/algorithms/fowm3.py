@@ -856,7 +856,7 @@ class FOWM:
 
         self.save("final_policy")
 
-    def save(self, filename):
+    def save(self, filename, buffer=False):
         torch.save(
             {
                 "actor": self.actor.state_dict(),
@@ -871,14 +871,16 @@ class FOWM:
             },
             os.path.join(self.log_dir, "{}.pt".format(filename)),
         )
+        if buffer:
+            self.buffer.save(os.path.join(self.log_dir, "{}.buffer".format(filename)))
 
-    def load(self, path):
+    def load(self, path, buffer=False):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
-        self.actor.load_state_dict(checkpoint["actor"])
-        self.actor.to(self.device)
-        self.critic.load_state_dict(checkpoint["critic"])
-        self.critic.to(self.device)
+        # self.actor.load_state_dict(checkpoint["actor"])
+        # self.actor.to(self.device)
+        # self.critic.load_state_dict(checkpoint["critic"])
+        # self.critic.to(self.device)
         self.wm.load_state_dict(checkpoint["world_model"])
         self.wm.to(self.device)
         self.obs_rms = (
@@ -903,6 +905,11 @@ class FOWM:
         self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
         self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
         self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
+
+        if buffer:
+            print("Loading buffer too")
+            self.buffer.load(path.replace(".pt", ".buffer"))
+            self.buffer._num_eps = 100  # placeholder to avoid initialization
 
     def pretrain_wm(self, paths, num_iters):
         if type(paths) != List:

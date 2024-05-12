@@ -6,6 +6,7 @@ actor_config:
   activation_class: nn.Mish
   init_gain: 1.0
   init_logstd: -1.0
+  min_logstd: -2.0
 critic_config:
   _target_: forl.models.critic.CriticMLP
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
@@ -51,7 +52,7 @@ lr_schedule: linear
 obs_rms: False
 rew_rms: True
 ret_rms: False
-critic_iterations: 8 # 16 was the tune for H=32
+critic_iterations: 16 # 16 was the tune for H=32
 critic_batches: 4
 critic_method: td-lambda # ('td-lambda', 'one-step')
 lam: 0.95
