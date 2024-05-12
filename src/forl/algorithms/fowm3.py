@@ -66,6 +66,7 @@ class FOWM:
         device: str = "cuda",
         save_data: bool = False,
         log: bool = False,
+        detach: bool = False,
     ):
         # sanity check parameters
         assert horizon > 0
@@ -97,6 +98,7 @@ class FOWM:
         self.lr_schedule = lr_schedule
         self.gamma = gamma
         self.lam = lam
+        self.detach = detach
 
         self.critic_method = critic_method
         self.critic_iterations = critic_iterations
@@ -291,7 +293,11 @@ class FOWM:
                 self.obs_buf[i] = z.clone()
 
             # act in environment
-            actions = self.actor(z, deterministic=deterministic)
+            if self.detach:
+                actions = self.actor(z.detach(), deterministic=deterministic)
+            else:
+                actions = self.actor(z, deterministic=deterministic)
+
             actions = torch.tanh(actions)
             # TODO really move tanh inside actor
             z, rew, term = self.wm.step(z, actions, task=None)
@@ -854,7 +860,7 @@ class FOWM:
 
         self.time_report.report()
 
-        self.save("final_policy")
+        self.save("final_policy", buffer=True)
 
     def save(self, filename, buffer=False):
         torch.save(
@@ -877,6 +883,7 @@ class FOWM:
     def load(self, path, buffer=False):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
+        # NOTE temporary for benchmarking
         # self.actor.load_state_dict(checkpoint["actor"])
         # self.actor.to(self.device)
         # self.critic.load_state_dict(checkpoint["critic"])
@@ -893,11 +900,12 @@ class FOWM:
             if checkpoint["rew_rms"] is not None
             else None
         )
-        self.ret_rms = (
-            checkpoint["ret_rms"].to(self.device)
-            if checkpoint["ret_rms"] is not None
-            else None
-        )
+        # NOTE: commented out so that ret_rms works when loading a pre-trained world model
+        # self.ret_rms = (
+        #     checkpoint["ret_rms"].to(self.device)
+        #     if checkpoint["ret_rms"] is not None
+        #     else None
+        # )
         # need to also load last learning rates as they will be used to continue training
         self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
         self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
@@ -911,12 +919,12 @@ class FOWM:
             self.buffer.load(path.replace(".pt", ".buffer"))
             self.buffer._num_eps = 100  # placeholder to avoid initialization
 
-    def pretrain_wm(self, paths, num_iters):
+    def pretrain_wm(self, paths, num_iters, actually_train=True):
         if type(paths) != List:
             paths = [paths]
         for path in paths:
             print("loading", path)
-            td = torch.load(path)
+            td = torch.load(path).to("cpu")
 
             # fetch stats for normalizing
             if self.obs_rms:
@@ -927,12 +935,17 @@ class FOWM:
                 self.obs_rms.update(obs)
 
             if self.rew_rms:
+                self.rew_rms = self.rew_rms.to("cpu")
                 rew = td["reward"]
                 rew = rew.reshape((-1, 1))
                 rew = torch.nan_to_num(rew)
                 self.rew_rms.update(rew)
+                self.rew_rms = self.rew_rms.to(self.device)
 
             self.buffer.add_batch(td)
+
+        if not actually_train:
+            return
 
         print(f"Pretraining world model for {num_iters} iters")
         log_freq = num_iters // 100
@@ -970,7 +983,7 @@ class FOWM:
             if i % save_at == 0:
                 self.save(f"pretrained_{i}")
         self.wm_bootstrapped = True
-        self.save("pretrained")
+        self.save("pretrained", buffer=True)
 
     def compute_wm_loss(self, obs, act, rew, term):
         if term.dtype == torch.bool:

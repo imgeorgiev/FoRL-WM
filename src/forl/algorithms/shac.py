@@ -652,7 +652,7 @@ class SHAC:
                 "policy_discounted_loss": mean_policy_discounted_loss,
                 "best_policy_loss": self.best_policy_loss,
                 "episode_lengths": mean_episode_length,
-                "ac_std": ac_stddev,
+                "actor_std": ac_stddev,
                 "actor_grad_norm": self.actor_grad_norm_before_clip,
                 "critic_grad_norm": critic_grad_norm,
                 "episode_end": self.episode_end,

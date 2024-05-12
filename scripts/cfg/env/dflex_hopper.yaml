@@ -2,10 +2,10 @@ config:
   _target_: dflex.envs.HopperEnv
   render: ${general.render}
   device: ${general.device}
-  num_envs: 1024
+  num_envs: 64
   stochastic_init: True
   no_grad: False
-  episode_length: 500
+  episode_length: 1000
   MM_caching_frequency: 16
   early_termination: True
   termination_height: -0.45

@@ -110,7 +110,7 @@ class Buffer:
         td = td[torch.randint(0, num_eps, (eps_that_fit,))]
         episodes = torch.ones_like(td["reward"], dtype=torch.int32) * torch.arange(
             0, eps_that_fit, dtype=torch.int32
-        ).view((-1, 1)).to("cuda")
+        ).view((-1, 1))
         td["episode"] = episodes
         if "term" not in td.keys():
             td["term"] = torch.zeros_like(td["reward"], dtype=torch.bool)

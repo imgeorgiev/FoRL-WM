@@ -6,6 +6,7 @@ actor_config:
   activation_class: nn.Mish
   init_gain: 1.0
   init_logstd: -1.0
+  min_logstd: -1.427
 critic_config:
   _target_: forl.models.critic.CriticMLP
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
@@ -50,19 +51,20 @@ model_lr: 3e-4
 lr_schedule: linear
 obs_rms: False
 rew_rms: True
-ret_rms: False
-critic_iterations: 16
+ret_rms: True
+critic_iterations: 8
 critic_batches: 4
 critic_method: td-lambda # ('td-lambda', 'one-step')
 lam: 0.95
 gamma: 0.99
-max_epochs: ${resolve_child:2000,${env.shac},max_epochs}
+max_epochs: 15_000 # assuming 64 actor batch size / num envs
 horizon: 16
 actor_grad_norm: 1.0 # Can also be none
-critic_grad_norm: 100.0 # Can also be none
+critic_grad_norm: 100.0 # Can also be none; doesn't matter
 wm_batch_size: 256
 wm_iterations: 8
 wm_grad_norm: 20.0
 wm_buffer_size: 10_000_000
+detach: True
 save_interval: ${resolve_child:400,${env.shac},save_interval}
 device: ${general.device}

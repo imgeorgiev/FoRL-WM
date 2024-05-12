@@ -70,7 +70,10 @@ def train(cfg: DictConfig):
         agent.wm_bootstrapped = True
 
     if cfg.general.pretrain:
-        agent.pretrain_wm(cfg.general.pretrain, cfg.general.pretrain_steps)
+        actually_train = True if not cfg.general.checkpoint else False
+        agent.pretrain_wm(
+            cfg.general.pretrain, cfg.general.pretrain_steps, actually_train
+        )
 
     if cfg.general.train:
         agent.train()
