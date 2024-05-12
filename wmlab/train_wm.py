@@ -8,6 +8,7 @@ import torch
 import hydra
 from termcolor import colored
 
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'external', 'tdmpc2', 'tdmpc2')) # for TD-MPC2 imports to work
 from common.parser import parse_cfg
 from common.seed import set_seed
 from common.buffer import Buffer

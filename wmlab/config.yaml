@@ -2,7 +2,7 @@ defaults:
     - override hydra/launcher: submitit_local
 
 # environment
-task: dog-run
+task: hopper-stand
 obs: state
 
 env:
@@ -19,12 +19,13 @@ env:
 # evaluation
 checkpoint: ???
 eval_episodes: 10
-eval_freq: 20_000
+eval_freq: 5_000
+save_policy_freq: 100_000
 
 # training
 steps: 10_000_000
 seed_train_steps: 5000
-batch_size: 1024 # default 256. Mine: num_envs * 32
+batch_size: 256 # default 256. Mine: num_envs * 32
 reward_coef: 0.1
 value_coef: 0.1
 consistency_coef: 20
@@ -38,7 +39,9 @@ discount_min: 0.95
 discount_max: 0.995
 buffer_size: 1_000_000 # minimum must be 1000 x num_envs
 exp_name: default
-data_dir: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-ant
+data_dir: /storage/home/hcoda1/6/vgiridhar6/FoWM/data/hopper-stand
+supervised_model_dir: ???
+policy_model_dir: ???
 offline: True
 
 # planning
@@ -76,14 +79,15 @@ simnorm_dim: 8
 
 # logging
 wandb_project: fowm
-wandb_entity: imgeorgiev
+wandb_entity: pair-diffusion
 wandb_silent: false
 disable_wandb: true
 save_csv: true
 
 # misc
 save_video: false
-save_agent: True
+save_agent: false
+save_policy: false
 seed: 2
 
 # convenience
