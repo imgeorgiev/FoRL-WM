@@ -66,7 +66,8 @@ def train(cfg: DictConfig):
     agent = instantiate(cfg.alg, env=env, logdir=logdir, log=cfg.general.run_wandb)
 
     if cfg.general.checkpoint:
-        agent.load(cfg.general.checkpoint)
+        agent.load(cfg.general.checkpoint, cfg.general.checkpoint_with_buffer)
+        agent.wm_bootstrapped = True
 
     if cfg.general.pretrain:
         agent.pretrain_wm(cfg.general.pretrain, cfg.general.pretrain_steps)

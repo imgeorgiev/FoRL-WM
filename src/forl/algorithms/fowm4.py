@@ -67,6 +67,8 @@ class FOWM:
         save_data: bool = False,
         log: bool = False,
         with_terminate: bool = False,
+        ent_coef: float = 1e-2,
+        detach: bool = False,
     ):
         # sanity check parameters
         assert horizon > 0
@@ -98,6 +100,8 @@ class FOWM:
         self.lr_schedule = lr_schedule
         self.gamma = gamma
         self.lam = lam
+        self.ent_coef = ent_coef
+        self.detach = detach
 
         self.critic_method = critic_method
         self.critic_iterations = critic_iterations
@@ -265,6 +269,9 @@ class FOWM:
         )
 
         actor_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        entropy_loss = torch.zeros(
+            self.num_envs, dtype=torch.float32, device=self.device
+        )
 
         # update and normalize obs
         if self.obs_rms:
@@ -279,7 +286,13 @@ class FOWM:
                 self.obs_buf[i] = z.clone()
 
             # act in environment
-            act = torch.tanh(self.actor(z, deterministic=False))
+            # act = self.actor(z, deterministic=False)
+            if self.detach:
+                act, act_log_prob = self.actor.action_log_probs(z.detach())
+            else:
+                act, act_log_prob = self.actor.action_log_probs(z)
+            entropy_loss += act_log_prob.sum(dim=-1)
+            act = torch.tanh(act)
             # TODO really move tanh inside actor
             z, rew, term = self.wm.step(z, act, task=None)
 
@@ -342,8 +355,9 @@ class FOWM:
             actor_loss /= torch.sqrt(self.ret_rms.var + 1e-5)
         else:
             actor_loss /= self.horizon
+            entropy_loss /= self.horizon
 
-        return actor_loss.mean()
+        return torch.mean(actor_loss + self.ent_coef * entropy_loss)
 
     @torch.no_grad()
     def eval(self, num_games, deterministic=True):
@@ -587,10 +601,10 @@ class FOWM:
             self.time_report.start_timer("backward simulation")
             actor_loss.backward()
             self.time_report.end_timer("backward simulation")
-            self.actor_grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
-            self.actor_grad_norm_after_clip = clip_grad_norm_(
-                self.actor.parameters(), self.actor_grad_norm
+            self.actor_grad_norm_before_clip = clip_grad_norm_(
+                self.actor.parameters(), 1.0
             )
+            self.actor_grad_norm_after_clip = tu.grad_norm(self.actor.parameters())
             self.actor_optimizer.step()
             self.time_report.end_timer("actor training")
 
@@ -646,6 +660,7 @@ class FOWM:
             term = info["termination"]
             primal = info["primal"]
             self.step_count += self.num_envs
+            self.episode_length += 1
 
             # Record data
             self.add_wm_buffer(real_obs, act, rew, term, done)
@@ -767,7 +782,7 @@ class FOWM:
 
         self.time_report.report()
 
-        self.save("final_policy")
+        self.save("final_policy", buffer=True)
 
     def wm_update(self):
         obs, act, rew, term = self.buffer.sample()
@@ -820,7 +835,7 @@ class FOWM:
         self.episode_length[done_env_ids] = 0
         self.episode_gamma[done_env_ids] = 1.0
 
-    def save(self, filename):
+    def save(self, filename, buffer=False):
         torch.save(
             {
                 "actor": self.actor.state_dict(),
@@ -835,8 +850,10 @@ class FOWM:
             },
             os.path.join(self.log_dir, "{}.pt".format(filename)),
         )
+        if buffer:
+            self.buffer.save(os.path.join(self.log_dir, "{}.buffer".format(filename)))
 
-    def load(self, path):
+    def load(self, path, buffer=False):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
         # self.actor.load_state_dict(checkpoint["actor"])
@@ -867,6 +884,9 @@ class FOWM:
         self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
         self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
         self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
+
+        if buffer:
+            self.buffer.load(path.replace(".pt", ".buffer"))
 
     def pretrain_wm(self, paths, num_iters):
         if type(paths) != List:
@@ -927,7 +947,7 @@ class FOWM:
             if i % save_at == 0:
                 self.save(f"pretrained_{i}")
         self.wm_bootstrapped = True
-        self.save("pretrained")
+        self.save("pretrained", buffer=True)
 
     def compute_wm_loss(self, obs, act, rew, term):
         if term.dtype == torch.bool:

@@ -51,19 +51,21 @@ lr_schedule: linear
 obs_rms: False
 rew_rms: True
 ret_rms: False
-critic_iterations: 16
+critic_iterations: 8 # 16 was the tune for H=32
 critic_batches: 4
 critic_method: td-lambda # ('td-lambda', 'one-step')
 lam: 0.95
 gamma: 0.99
-max_epochs: 100000
+max_epochs: ${resolve_child:2000,${env.shac},max_epochs}
 horizon: 16
 actor_grad_norm: 1.0 # Can also be none
 critic_grad_norm: 100.0 # Can also be none
 wm_batch_size: 256
-wm_iterations: 8
+wm_iterations: 4 # 1 is bad but too much is unnecessary
 wm_grad_norm: 20.0
-wm_buffer_size: 10000000
-with_terminate: False
+wm_buffer_size: 10_000_000
+with_terminate: False # doesn't work right now
 save_interval: ${resolve_child:400,${env.shac},save_interval}
 device: ${general.device}
+ent_coef: 0.0 # doesn't help
+detach: False

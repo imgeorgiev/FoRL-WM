@@ -54,6 +54,7 @@ class ActorStochasticMLP(nn.Module):
         activation_class: Type = nn.ELU,
         init_gain: float = 1.0,
         init_logstd: float = -1.0,
+        min_logstd: float = -10.0,
     ):
         super(ActorStochasticMLP, self).__init__()
 
@@ -80,6 +81,7 @@ class ActorStochasticMLP(nn.Module):
 
         self.action_dim = action_dim
         self.obs_dim = obs_dim
+        self.min_logstd = min_logstd
 
         for param in self.parameters():
             param.data *= init_gain
@@ -87,7 +89,11 @@ class ActorStochasticMLP(nn.Module):
     def get_logstd(self):
         return self.logstd
 
+    def clamp_std(self):
+        self.logstd.data = torch.clamp(self.logstd.data, self.min_logstd)
+
     def forward(self, obs, deterministic=False):
+        self.clamp_std()
         mu = self.mu_net(obs)
 
         if deterministic:
@@ -97,6 +103,16 @@ class ActorStochasticMLP(nn.Module):
             dist = Normal(mu, std)
             sample = dist.rsample()
             return sample
+
+    def action_log_probs(self, obs):
+        self.clamp_std()
+        mu = self.mu_net(obs)
+
+        std = self.logstd.exp()
+        dist = Normal(mu, std)
+        sample = dist.rsample()
+
+        return sample, dist.log_prob(sample)
 
     def forward_with_dist(self, obs, deterministic=False):
         mu = self.mu_net(obs)
@@ -109,7 +125,7 @@ class ActorStochasticMLP(nn.Module):
             sample = dist.rsample()
             return sample, mu, std
 
-    def evaluate_actions_log_probs(self, obs, actions):
+    def log_probs(self, obs, actions):
         mu = self.mu_net(obs)
 
         std = self.logstd.exp()

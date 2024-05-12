@@ -41,7 +41,7 @@ class Buffer:
             storage=storage,
             sampler=self._sampler,
             pin_memory=True,
-            prefetch=1,
+            prefetch=12,
             batch_size=self._batch_size,
         )
 
@@ -125,3 +125,13 @@ class Buffer:
         """Sample a batch of subsequences from the buffer."""
         td = self._buffer.sample().view(-1, self._horizon + 1).permute(1, 0)
         return self._prepare_batch(td)
+
+    def save(self, filepath):
+        self._buffer.dumps(filepath)
+
+    def load(self, filepath):
+        if self._num_eps == 0:
+            self._buffer = self._reserve_buffer(
+                LazyTensorStorage(self._capacity, device=self._device)
+            )
+        self._buffer.loads(filepath)

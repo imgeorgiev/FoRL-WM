@@ -5,6 +5,7 @@ config:
   num_envs: 64
   no_grad: False
   stochastic_init: True
+  early_termination: True
   episode_length: 1000
   MM_caching_frequency: 48
   termination_height: 0.74

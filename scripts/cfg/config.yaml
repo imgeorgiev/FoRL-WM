@@ -11,6 +11,7 @@ general:
   run_wandb: False
   seed: 42
   checkpoint:
+  checkpoint_with_buffer: True
   eval_runs: 12
   pretrain: 
   # pretrain: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-hopper/ep_data_HopperEnv_ep131072_1.pt
