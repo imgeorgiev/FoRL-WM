@@ -13,6 +13,7 @@ dependencies:
   - matplotlib
   - seaborn
   - notebook
+  - glew=2.1.0 # for mujoco
   - pip
   - pip:
       - tensordict
@@ -28,4 +29,5 @@ dependencies:
       - dm-control==1.0.8
       - mujoco==2.3.1
       - mujoco-py==2.1.2.14
+      - "cython<3" # for mujoco
 
