@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .mlp import SimNorm, mlp
 
 
@@ -24,6 +25,18 @@ def zero_(params):
         p.data.fill_(0)
 
 
+@torch.jit.script
+def symexp(x):
+    """
+    Symmetric exponential function.
+    Adapted from https://github.com/danijar/dreamerv3.
+    """
+    return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
+
+
+DREG_BINS = None
+
+
 class WorldModel(nn.Module):
     """
     TD-MPC2 implicit world model architecture.
@@ -40,15 +53,19 @@ class WorldModel(nn.Module):
         encoder,
         dynamics,
         reward,
-        # last_act=SimNorm(simnorm_dim=8),
         action_dims=None,
         num_bins=None,
+        vmin=None,
+        vmax=None,
         multitask=False,
         tasks=None,
         task_dim=0,
     ):
         super().__init__()
         self.multitask = multitask
+        self.num_bins = num_bins
+        self.vmin = vmin
+        self.vmax = vmax
         if self.multitask:
             self._task_emb = nn.Embedding(len(tasks), task_dim, max_norm=1)
             self._action_masks = torch.zeros(len(tasks), action_dim)
@@ -71,8 +88,7 @@ class WorldModel(nn.Module):
         self._reward = mlp(
             latent_dim + action_dim + task_dim,
             units,
-            # max(num_bins, 1),
-            1,
+            max(num_bins, 1) if num_bins else 1,
             last_layer=reward["last_layer"],
             last_layer_kwargs=reward["last_layer_kwargs"],
         )
@@ -164,6 +180,24 @@ class WorldModel(nn.Module):
         assert z.shape[0] == a.shape[0]
         z_next = self.next(z, a, task)
         r = self.reward(z, a, task)
+        if self.num_bins:
+            r = self.two_hot_inv(r)
+        # TODO this below has to be softmaxed
         t = self.terminate(z, a, task)
         t = torch.round(t).bool()
         return z_next, r.squeeze(), t.squeeze()
+
+    def two_hot_inv(self, x):
+        """Converts a batch of soft two-hot encoded vectors to scalars."""
+        global DREG_BINS
+        if self.num_bins == 0:
+            return x
+        elif self.num_bins == 1:
+            return symexp(x)
+        if DREG_BINS is None:
+            DREG_BINS = torch.linspace(
+                self.vmin, self.vmax, self.num_bins, device=x.device
+            )
+        x = F.softmax(x, dim=-1)
+        x = torch.sum(x * DREG_BINS, dim=-1, keepdim=True)
+        return symexp(x)

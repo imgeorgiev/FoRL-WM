@@ -85,9 +85,9 @@ class Buffer:
         obs = td["obs"]
         action = td["action"][1:]
         reward = td["reward"][1:].unsqueeze(-1)
-        term = td["term"][1:].unsqueeze(-1)
+        # term = td["term"][1:].unsqueeze(-1)
         # task = td["task"][0] if "task" in td.keys() else None
-        return self._to_device(obs, action, reward, term)
+        return self._to_device(obs, action, reward)
 
     def add(self, td):
         """Add an episode to the buffer."""
@@ -112,8 +112,8 @@ class Buffer:
             0, eps_that_fit, dtype=torch.int32
         ).view((-1, 1))
         td["episode"] = episodes
-        if "term" not in td.keys():
-            td["term"] = torch.zeros_like(td["reward"], dtype=torch.bool)
+        # if "term" not in td.keys():
+        #     td["term"] = torch.zeros_like(td["reward"], dtype=torch.bool)
         td = td.flatten()  # faltten to easy ading
         if self._num_eps == 0:
             self._buffer = self._init(td[0 : ep_len + 1])
