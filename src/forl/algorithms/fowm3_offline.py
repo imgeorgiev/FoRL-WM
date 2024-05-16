@@ -170,12 +170,6 @@ class FOWM:
         )
 
         rew_acc = torch.zeros((bsz, 1), dtype=torch.float32, device=self.device)
-        # gamma = torch.ones(bsz, dtype=torch.float32, device=self.device)
-        # next_values = torch.zeros(
-        #     (self.horizon + 1, bsz), dtype=torch.float32, device=self.device
-        # )
-
-        # actor_loss = torch.zeros(bsz, dtype=torch.float32, device=self.device)
 
         # update and normalize obs
         if self.obs_rms:
@@ -199,23 +193,9 @@ class FOWM:
             # TODO really move tanh inside actor
             z, rew = self.wm.step(z, actions, task)
 
-            # breakpoint()
-
-            # TODO don't need to do this at every step
-            # next_values[i + 1] = self.critic(z).min(dim=0).values.squeeze()
-
-            # # sanity check
-            # if (next_values > 1e6).sum() > 0 or (next_values < -1e6).sum() > 0:
-            #     print_error("next value error")
-            #     raise ValueError
-
-            r = self.wm.almost_two_hot_inv(rew)
-            rew_acc += self.gamma**i * r
+            rew_acc += self.gamma**i * self.wm.almost_two_hot_inv(rew)
 
             next_values = self.critic(z).min(dim=0).values.squeeze()
-
-            # compute gamma for next step
-            # gamma = gamma * self.gamma
 
             # collect data for critic training
             with torch.no_grad():
@@ -228,10 +208,7 @@ class FOWM:
                     self.done_mask[i, :] = 1.0
                 self.next_values[i] = next_values.clone()
 
-        # next_values = self.critic(z).min(dim=0).values.squeeze()
-        # breakpoint()
-        actor_loss = -rew_acc - self.gamma**self.horizon * next_values[..., None]
-
+        actor_loss = rew_acc + self.gamma**self.horizon * next_values[..., None]
         assert actor_loss.shape == (bsz, 1)
 
         if self.ret_rms is not None:
@@ -240,7 +217,7 @@ class FOWM:
         else:
             actor_loss /= self.horizon
 
-        actor_loss = actor_loss.mean()
+        actor_loss = -actor_loss.mean()
 
         return actor_loss
 
@@ -278,16 +255,17 @@ class FOWM:
         critic_loss = ((predicted_values - target_values) ** 2).mean()
         return critic_loss
 
-    def update(self, obs, act, rew, task):
+    def update(self, obs, act, rew, task, finetune_wm=False):
 
         L, bsz, obs_dim = obs.shape
 
         # train world model
-        self.wm_optimizer.zero_grad()
-        wm_loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew, task)
-        wm_loss.backward()
-        wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
-        self.wm_optimizer.step()
+        if finetune_wm:
+            self.wm_optimizer.zero_grad()
+            wm_loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew, task)
+            wm_loss.backward()
+            wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
+            self.wm_optimizer.step()
 
         # train actor
         self.actor_optimizer.zero_grad()
@@ -350,14 +328,14 @@ class FOWM:
         metrics = {
             "actor_loss": actor_loss,
             "value_loss": value_loss,
-            "wm_loss": wm_loss,
-            "dynamics_loss": dyn_loss,
-            "reward_loss": rew_loss,
-            "actor_std": ac_stddev,
             "actor_grad_norm": self.actor_grad_norm_before_clip,
             "critic_grad_norm": critic_grad_norm,
-            "wm_grad_norm": wm_grad_norm,
         }
+        if finetune_wm:
+            metrics["wm_loss"] = wm_loss
+            metrics["dynamics_loss"] = dyn_loss
+            metrics["reward_loss"] = rew_loss
+            metrics["wm_grad_norm"] = wm_grad_norm
         metrics = filter_dict(metrics)
         return metrics
 

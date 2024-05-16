@@ -12,10 +12,7 @@ general:
   seed: 42
   checkpoint:
   checkpoint_with_buffer: False
-  eval_runs: 5
-  pretrain: 
-  # pretrain: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-hopper/ep_data_HopperEnv_ep131072_1.pt
-  # pretrain: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-cartpole/ep_data_CartPoleSwingUpEnv_ep67584_1.pt
+  eval_runs: 10
   pretrain_steps: 50000
   multitask: True
 
@@ -43,6 +40,7 @@ epochs: 10_000
 eval_freq: 1000
 horizon: 3
 data_dir: /storage/coda1/p-agarg35/0/shared/tdmpc2-datasets/mt80
+finetune_wm: False
 
 buffer:
   _target_: forl.utils.buffer.Buffer

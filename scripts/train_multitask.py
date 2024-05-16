@@ -241,7 +241,7 @@ def train(cfg: dict):
     # load dataset; buffer must happen here!
     buffer = instantiate(cfg.buffer)
 
-    cfg.episode_length = 101 if 'mt80' in cfg.data_dir else 501
+    cfg.episode_length = 101 if "mt80" in cfg.data_dir else 501
     fp = Path(os.path.join(cfg.data_dir, "*.pt"))
     fps = sorted(glob(str(fp)))
     assert len(fps) > 0, f"No data found at {fp}"
@@ -265,7 +265,7 @@ def train(cfg: dict):
     task_ids = torch.tensor([task_id] * cfg.buffer.batch_size, device=agent.device)
     for i in range(cfg.epochs):
         obs, act, rew = buffer.sample()
-        train_metrics = agent.update(obs, act, rew, task_ids)
+        train_metrics = agent.update(obs, act, rew, task_ids, cfg.finetune_wm)
 
         metrics = {
             "iteration": i,
@@ -282,6 +282,8 @@ def train(cfg: dict):
                 agent.save(f"model_{i}", logdir)
 
         if i % 50 == 0:
+            if "wm_loss" not in metrics:
+                metrics["wm_loss"] = np.nan
             print(
                 "[{:}/{:}]  AL:{:.3f}  VL:{:.3f}  WML:{:.3f}".format(
                     i,
@@ -299,7 +301,7 @@ def train(cfg: dict):
         "iteration": cfg.epochs,
         "total_time": time() - start_time,
     }
-    metrics.update(eval(agent, env, task[0].item(), cfg.general.eval_runs))
+    metrics.update(eval(agent, env, task_id, cfg.general.eval_runs))
     reward = metrics[f"episode_reward+{task}"]
     print(f"Final reward: {reward:.2f}")
 
