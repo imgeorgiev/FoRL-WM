@@ -154,7 +154,7 @@ def make_multitask_env(cfg):
     return env
 
 
-def eval(agent, env, task_idx, eval_episodes):
+def eval(agent, env, task_set, task_idx, eval_episodes):
     """Evaluate a TD-MPC2 agent."""
     results = dict()
     # for task_idx in tqdm(range(len(self.cfg.tasks)), desc="Evaluating"):
@@ -170,8 +170,8 @@ def eval(agent, env, task_idx, eval_episodes):
         ep_successes.append(info["success"])
     results.update(
         {
-            f"episode_reward+{TASK_SET['mt80'][task_idx]}": np.nanmean(ep_rewards),
-            f"episode_success+{TASK_SET['mt80'][task_idx]}": np.nanmean(ep_successes),
+            f"episode_reward+{task_set[task_idx]}": np.nanmean(ep_rewards),
+            f"episode_success+{task_set[task_idx]}": np.nanmean(ep_successes),
         }
     )
     return results
@@ -208,13 +208,19 @@ def train(cfg: dict):
 
     seeding(cfg.general.seed)
 
+    task = cfg.task
+    task_set = TASK_SET["mt80"] if "mt80" in cfg.data_dir else TASK_SET["mt30"]
+    task_id = task_set.index(task)
+    if "mt80" in cfg.data_dir:
+        cfg.alg.world_model_config.task_dim = 96
+    else:
+        cfg.alg.world_model_config.task_dim = 64
+
     # multitask config
-    cfg.tasks = cfg.alg.world_model_config.tasks = TASK_SET["mt80"]
+    cfg.tasks = cfg.alg.world_model_config.tasks = task_set
     env = make_multitask_env(cfg)
     cfg.alg.world_model_config.action_dims = cfg.action_dims
 
-    task = cfg.task
-    task_id = TASK_SET["mt80"].index(task)
     print(f"Task {task} with ID {task_id} and length {cfg.episode_lengths[task_id]}")
 
     try:  # Dict
@@ -260,11 +266,15 @@ def train(cfg: dict):
             buffer.add_batch(td)
             break  # NOTE probably temporary
 
+    if buffer.num_eps == 0:
+        raise ValueError("No data found for task", task)
+
     # train from dataset
     start_time = time()
     task_ids = torch.tensor([task_id] * cfg.buffer.batch_size, device=agent.device)
     for i in range(cfg.epochs):
         obs, act, rew = buffer.sample()
+        # obs = obs.reshape((-1, obs.shape[-1]))
         train_metrics = agent.update(obs, act, rew, task_ids, cfg.finetune_wm)
 
         metrics = {
@@ -275,7 +285,7 @@ def train(cfg: dict):
 
         # Evaluate agent periodically
         if i % cfg.eval_freq == 0:
-            metrics.update(eval(agent, env, task_id, cfg.general.eval_runs))
+            metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
             reward = metrics[f"episode_reward+{task}"]
             print(f"R: {reward:.2f}")
             if i > 0:
@@ -301,7 +311,7 @@ def train(cfg: dict):
         "iteration": cfg.epochs,
         "total_time": time() - start_time,
     }
-    metrics.update(eval(agent, env, task_id, cfg.general.eval_runs))
+    metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
     reward = metrics[f"episode_reward+{task}"]
     print(f"Final reward: {reward:.2f}")
 

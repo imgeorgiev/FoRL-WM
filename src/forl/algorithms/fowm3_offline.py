@@ -200,7 +200,7 @@ class FOWM:
             # collect data for critic training
             with torch.no_grad():
                 if self.wm.num_bins:
-                    rew = self.wm.two_hot_inv(rew).flatten()
+                    rew = self.wm.almost_two_hot_inv(rew).flatten()
                 self.rew_buf[i] = rew.clone()
                 if i < self.horizon - 1:
                     self.done_mask[i, :] = 0.0
