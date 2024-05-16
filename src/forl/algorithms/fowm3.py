@@ -20,7 +20,6 @@ from forl.utils.time_report import TimeReport
 from forl.utils.average_meter import AverageMeter
 from forl.models.model_utils import Ensemble
 from forl.utils.buffer import Buffer
-from forl.models.world_model import WorldModel
 
 tensordict.set_lazy_legacy(False).set()
 
@@ -249,7 +248,9 @@ class FOWM:
         # save initial policy for reproducibility
         self.save("init_policy")
         # unit test-ish that we can load the policy
-        self.load(f"{self.log_dir}/init_policy.pt")
+        # self.load(f"{self.log_dir}/init_policy.pt")
+
+        print(self.wm)
 
     @property
     def mean_horizon(self):
@@ -308,6 +309,20 @@ class FOWM:
             real_obs = info["obs_before_reset"]
             primal = info["primal"]
 
+            if torch.any(torch.isnan(rew)):
+                print_warning("NaN reward from model!")
+                rew = torch.nan_to_num(rew)
+
+            # sanity check; remove?
+            if (~torch.isfinite(obs)).sum() > 0:
+                print_warning("Got inf obs from sim")
+                obs[~torch.isfinite(obs)] = 0.0
+
+            # sanity check; remove?
+            if (~torch.isfinite(gt_rew)).sum() > 0:
+                print_warning("Got inf rew from sim")
+                gt_rew[~torch.isfinite(gt_rew)] = 0.0
+
             # log data to buffer
             with torch.no_grad():
 
@@ -360,10 +375,6 @@ class FOWM:
 
             self.episode_length += 1
             rollout_len += 1
-
-            # sanity check; remove?
-            if (~torch.isfinite(obs)).sum() > 0:
-                print_warning("Got inf obs")
 
             next_values[i + 1] = self.critic(z).min(dim=0).values.squeeze()
 
@@ -631,6 +642,8 @@ class FOWM:
 
             self.time_report.start_timer("forward simulation")
             actor_loss = self.compute_actor_loss()
+            if torch.isnan(actor_loss):
+                print_error("NaN actor loss")
             self.time_report.end_timer("forward simulation")
 
             self.time_report.start_timer("backward simulation")
@@ -645,7 +658,10 @@ class FOWM:
             # sanity check
             if torch.isnan(self.actor_grad_norm_before_clip):
                 print_error("NaN gradient")
-                raise ValueError
+                # ugly fix for simulation nan problem
+                for params in self.actor.parameters():
+                    params.grad.nan_to_num_(0.0, 0.0, 0.0)
+                # raise ValueError
 
             self.time_report.end_timer("compute actor loss")
 
@@ -750,30 +766,43 @@ class FOWM:
                 self.wm_bootstrapped = True
 
             for i in range(0, iters):
-                obs, act, rew, term = self.buffer.sample()
+                obs, act, rew = self.buffer.sample()
+
+                if torch.any(torch.isnan(rew)):
+                    print("WARN: NaN reward sampled!")
+
                 if self.obs_rms:
                     self.obs_rms.update(obs.reshape((-1, self.num_obs)))
-                    obs = self.rew_rms.normalize(obs)
+                    obs = self.obs_rms.normalize(obs)
 
                 if self.rew_rms:
                     self.rew_rms.update(rew.reshape((-1, 1)))
                     rew = self.rew_rms.normalize(rew)
+
+                if torch.any(torch.isnan(rew)):
+                    print("WARN: NaN reward post-processed!")
+
                 sample_rew_mean += rew.mean().item()
                 sample_rew_var += rew.var().item()
                 sample_obs_mean += obs.mean(dim=0).mean().item()
                 sample_obs_var += obs.var(dim=0).mean().item()
 
                 self.wm_optimizer.zero_grad()
-                loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-                    obs, act, rew, term
-                )
+                # loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
+                #     obs, act, rew, term
+                # )
+                loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew)
                 loss.backward()
                 wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
+                if torch.isnan(wm_grad_norm):
+                    print_warning("world model NaN gradient")
+                    for params in self.wm.parameters():
+                        params.grad.nan_to_num_(0.0, 0.0, 0.0)
                 self.wm_optimizer.step()
                 tot_wm_loss += loss.item()
                 tot_dynamics_loss += dyn_loss
                 tot_reward_loss += rew_loss
-                tot_term_loss += term_loss
+                # tot_term_loss += term_loss
                 print(f"wm iter {i+1}/{iters}, loss = {loss:.2f}", end="\r")
 
             # normalize for logging; TODO simplify
@@ -829,8 +858,23 @@ class FOWM:
                 "sample_obs_mean": sample_obs_mean,
                 "sample_obs_var": sample_obs_var,
             }
+            if self.rew_rms:
+                metrics.update(
+                    dict(
+                        rew_rms_mean=self.rew_rms.mean.item(),
+                        rew_rms_var=self.rew_rms.var.item(),
+                    )
+                )
+
+            if self.ret_rms:
+                metrics.update(
+                    dict(
+                        ret_rms_mean=self.ret_rms.mean.item(),
+                        ret_rms_var=self.ret_rms.var.item(),
+                    )
+                )
             metrics = filter_dict(metrics)
-            if self.log:
+            if self.log and (self.iter_count % 50 == 0):
                 wandb.log(metrics, step=self.step_count)
 
             print(
@@ -895,11 +939,11 @@ class FOWM:
             if checkpoint["obs_rms"] is not None
             else None
         )
-        self.rew_rms = (
-            checkpoint["rew_rms"].to(self.device)
-            if checkpoint["rew_rms"] is not None
-            else None
-        )
+        # self.rew_rms = (
+        #     checkpoint["rew_rms"].to(self.device)
+        #     if checkpoint["rew_rms"] is not None
+        #     else None
+        # )
         # NOTE: commented out so that ret_rms works when loading a pre-trained world model
         # self.ret_rms = (
         #     checkpoint["ret_rms"].to(self.device)
@@ -918,6 +962,23 @@ class FOWM:
             print("Loading buffer too")
             self.buffer.load(path.replace(".pt", ".buffer"))
             self.buffer._num_eps = 100  # placeholder to avoid initialization
+
+    def load_wm(self, path):
+        print("Loading world model from", path)
+        checkpoint = torch.load(path)
+        checkpoint = checkpoint["model"]
+        new_odict = OrderedDict()
+        for key, value in checkpoint.items():
+            print(key)
+            if "_pi" in key:
+                pass
+            elif "_Qs" in key:
+                pass
+            else:
+                if "_encoder" in key:
+                    key = key.replace("state.", "")
+                new_odict[key] = value
+        self.wm.load_state_dict(new_odict)
 
     def pretrain_wm(self, paths, num_iters, actually_train=True):
         if type(paths) != List:
@@ -957,9 +1018,10 @@ class FOWM:
             if self.rew_rms:
                 rew = self.rew_rms.normalize(rew)
             self.wm_optimizer.zero_grad()
-            loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-                obs, act, rew, term
-            )
+            # loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
+            #     obs, act, rew, term
+            # )
+            loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew)
             loss.backward()
             wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
             self.wm_optimizer.step()
@@ -973,7 +1035,7 @@ class FOWM:
                     "pretrain/wm_grad_norm": wm_grad_norm,
                     "pretrain/dynamics_loss": dyn_loss,
                     "pretrain/reward_loss": rew_loss,
-                    "pretrain/term_loss": term_loss,
+                    # "pretrain/term_loss": term_loss,
                 }
                 wandb.log(metrics, step=i)
                 print(
@@ -985,9 +1047,9 @@ class FOWM:
         self.wm_bootstrapped = True
         self.save("pretrained", buffer=True)
 
-    def compute_wm_loss(self, obs, act, rew, term):
-        if term.dtype == torch.bool:
-            term = term.float()
+    def compute_wm_loss(self, obs, act, rew):
+        # if term.dtype == torch.bool:
+        #     term = term.float()
 
         horizon, batch_size, _ = obs.shape
         assert horizon == self.horizon + 1
@@ -1022,15 +1084,11 @@ class FOWM:
         rew_hat = self.wm.reward(_zs, act, task=None)
         reward_loss = (rew_hat - rew) ** 2 * discount
         reward_loss = reward_loss.mean()
-        term_hat = self.wm.terminate(_zs, act, task=None)
-        term_loss = F.binary_cross_entropy(term_hat, term, reduction="none")
-        term_loss = term_loss.mean()
 
-        total_loss = dynamics_loss + reward_loss + term_loss
+        total_loss = dynamics_loss + reward_loss  # + term_loss
         total_loss /= self.horizon
         return (
             total_loss,
             dynamics_loss / self.horizon,
             reward_loss.item() / self.horizon,
-            term_loss.item() / self.horizon,
         )

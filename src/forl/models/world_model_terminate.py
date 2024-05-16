@@ -92,6 +92,13 @@ class WorldModel(nn.Module):
             last_layer=reward["last_layer"],
             last_layer_kwargs=reward["last_layer_kwargs"],
         )
+        self._terminate = mlp(
+            latent_dim + action_dim + task_dim,
+            units,
+            1,
+            last_layer="normedlinear",
+            last_layer_kwargs={"act": nn.Sigmoid()},
+        )
         self.apply(weight_init)
         zero_([self._reward[-1].weight])
 
@@ -157,6 +164,15 @@ class WorldModel(nn.Module):
         z = torch.cat([z, a], dim=-1)
         return self._reward(z)
 
+    def terminate(self, z, a, task):
+        """
+        Predicts instantaneous (single-step) reward.
+        """
+        if self.multitask:
+            z = self.task_emb(z, task)
+        z = torch.cat([z, a], dim=-1)
+        return self._terminate(z)
+
     def step(self, z, a, task):
         """
         Predicts the next latent state, reward, and termination signal.
@@ -166,7 +182,10 @@ class WorldModel(nn.Module):
         r = self.reward(z, a, task)
         if self.num_bins:
             r = self.two_hot_inv(r)
-        return z_next, r.squeeze()
+        # TODO this below has to be softmaxed
+        t = self.terminate(z, a, task)
+        t = torch.round(t).bool()
+        return z_next, r.squeeze(), t.squeeze()
 
     def two_hot_inv(self, x):
         """Converts a batch of soft two-hot encoded vectors to scalars."""

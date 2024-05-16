@@ -1,20 +1,27 @@
-_target_: forl.algorithms.fowm3.FOWM
+_target_: forl.algorithms.fowm3_offline.FOWM
 _recursive_: False
 actor_config:
   _target_: forl.models.actor.ActorStochasticMLP
-  units: ${resolve_child:[400, 200, 100],${env.shac.actor_mlp},units}
+  units: [400, 200, 100]
   activation_class: nn.Mish
   init_gain: 1.0
   init_logstd: -1.0
   min_logstd: -1.427
 critic_config:
   _target_: forl.models.critic.CriticMLP
-  units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
+  units: [400, 200]
   activation_class: nn.Mish
 world_model_config:
-  _target_: forl.models.world_model_terminate.WorldModel
-  units: [512, 512]
-  encoder_units: [256]
+  _target_: forl.models.world_model.WorldModel
+  units: [1792, 1792]
+  encoder_units: [1792, 1792, 1792]
+  num_bins: 101
+  vmin: -10.0
+  vmax: 10.0
+  task_dim: 96
+  multitask: True
+  action_dims: ??? # set later
+  tasks: ???
   encoder:
     last_layer: normedlinear
     last_layer_kwargs:
@@ -31,9 +38,9 @@ world_model_config:
     last_layer: linear
     last_layer_kwargs: {}
 num_critics: 3
-latent_dim: 512
-actor_lr: ${resolve_child:2e-3,${env.shac},actor_lr}
-critic_lr: ${resolve_child:5e-4,${env.shac},critic_lr}
+latent_dim: 768
+actor_lr: 5e-4 #${resolve_child:2e-3,${env.shac},actor_lr}
+critic_lr: 5e-4 #${resolve_child:5e-4,${env.shac},critic_lr}
 model_lr: 3e-4
 lr_schedule: linear
 obs_rms: False
@@ -44,14 +51,14 @@ critic_batches: 4
 critic_method: td-lambda # ('td-lambda', 'one-step')
 lam: 0.95
 gamma: 0.99
-max_epochs: 15_000 # assuming 64 actor batch size / num envs
-horizon: 16
+# max_epochs: 15_000 # assuming 64 actor batch size / num envs
+horizon: ${horizon}
 actor_grad_norm: 1.0 # Can also be none
 critic_grad_norm: 100.0 # Can also be none; doesn't matter
-wm_batch_size: 256
-wm_iterations: 8
+# wm_batch_size: 256
+# wm_iterations: 8
 wm_grad_norm: 20.0
-wm_buffer_size: 10_000_000
+# wm_buffer_size: 10_000_000
 detach: True
-save_interval: ${resolve_child:400,${env.shac},save_interval}
+# save_interval: 500
 device: ${general.device}
