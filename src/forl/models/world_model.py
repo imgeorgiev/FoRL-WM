@@ -164,8 +164,8 @@ class WorldModel(nn.Module):
         assert z.shape[0] == a.shape[0]
         z_next = self.next(z, a, task)
         r = self.reward(z, a, task)
-        if self.num_bins:
-            r = self.two_hot_inv(r)
+        # if self.num_bins:
+        #     r = self.two_hot_inv(r)
         return z_next, r.squeeze()
 
     def two_hot_inv(self, x):
@@ -182,3 +182,18 @@ class WorldModel(nn.Module):
         x = F.softmax(x, dim=-1)
         x = torch.sum(x * DREG_BINS, dim=-1, keepdim=True)
         return symexp(x)
+
+    def almost_two_hot_inv(self, x):
+        """Converts a batch of soft two-hot encoded vectors to scalars."""
+        global DREG_BINS
+        if self.num_bins == 0:
+            return x
+        elif self.num_bins == 1:
+            return symexp(x)
+        if DREG_BINS is None:
+            DREG_BINS = torch.linspace(
+                self.vmin, self.vmax, self.num_bins, device=x.device
+            )
+        x = F.softmax(x, dim=-1)
+        x = torch.sum(x * DREG_BINS, dim=-1, keepdim=True)
+        return x

@@ -162,9 +162,6 @@ def eval(agent, env, task_idx, eval_episodes):
     for _ in range(eval_episodes):
         obs, done, ep_reward, t = env.reset(task_idx), False, 0, 0
         while not done:
-            # action = self.agent.act(
-            #     obs, t0=t == 0, eval_mode=True, task=task_idx
-            # )
             action = agent.act(obs, True, task_idx)
             obs, reward, done, info = env.step(action)
             ep_reward += reward
@@ -216,7 +213,9 @@ def train(cfg: dict):
     env = make_multitask_env(cfg)
     cfg.alg.world_model_config.action_dims = cfg.action_dims
 
-    task = TASK_SET["mt80"].index(cfg.task)
+    task = cfg.task
+    task_id = TASK_SET["mt80"].index(task)
+    print(f"Task {task} with ID {task_id} and length {cfg.episode_lengths[task_id]}")
 
     try:  # Dict
         cfg.obs_shape = {k: v.shape for k, v in env.observation_space.spaces.items()}
@@ -237,42 +236,36 @@ def train(cfg: dict):
         agent.load_wm(cfg.general.checkpoint)
         agent.wm_bootstrapped = True
 
-    # WE GUCCI UNTIL HERE
-
-    # temp buffer size
-    cfg.buffer.buffer_size = 550_450_000 // 10  # if cfg.task == "mt80" else 345_690_000
+    cfg.buffer.buffer_size = 550_450_000 // 100
 
     # load dataset; buffer must happen here!
     buffer = instantiate(cfg.buffer)
 
+    cfg.episode_length = 101 if 'mt80' in cfg.data_dir else 501
     fp = Path(os.path.join(cfg.data_dir, "*.pt"))
     fps = sorted(glob(str(fp)))
     assert len(fps) > 0, f"No data found at {fp}"
     print(f"Found {len(fps)} files in {fp}")
     for fp in tqdm(fps, desc="Loading data"):
+        print("Loading", fp)
         td = torch.load(fp)
-        # assert td.shape[1] == _cfg.episode_length, (
-        #     f"Expected episode length {td.shape[1]} to match config episode length {_cfg.episode_length}, "
-        #     f"please double-check your config."
-        # )
-        # TODO need to filter by task
-        # breakpoint()
-        idx = torch.all(td["task"] == task, dim=1)
+        assert td.shape[1] == cfg.episode_length, (
+            f"Expected episode length {td.shape[1]} to match config episode length {cfg.episode_length}, "
+            f"please double-check your config."
+        )
+        idx = torch.all(td["task"] == task_id, dim=1)
         td = td[idx]
         print(f"Found {len(td)} episodes in file.")
         if td.shape[0] != 0:
             buffer.add_batch(td)
-            # break  # TODO temporary
-    #     self.buffer.num_eps == self.buffer.capacity
-    # ), f"Buffer has {self.buffer.num_eps} episodes, expected {self.buffer.capacity} episodes."
+            break  # NOTE probably temporary
 
     # train from dataset
     start_time = time()
-    task_id = task
-    task = torch.tensor([task] * cfg.buffer.batch_size, device=agent.device)
+    task_ids = torch.tensor([task_id] * cfg.buffer.batch_size, device=agent.device)
     for i in range(cfg.epochs):
         obs, act, rew = buffer.sample()
-        train_metrics = agent.update(obs, act, rew, task)
+        train_metrics = agent.update(obs, act, rew, task_ids)
 
         metrics = {
             "iteration": i,
@@ -282,15 +275,13 @@ def train(cfg: dict):
 
         # Evaluate agent periodically
         if i % cfg.eval_freq == 0:
-            metrics.update(eval(agent, env, task[0].item(), cfg.general.eval_runs))
-            reward = metrics[f"episode_reward+{TASK_SET['mt80'][task_id]}"]
+            metrics.update(eval(agent, env, task_id, cfg.general.eval_runs))
+            reward = metrics[f"episode_reward+{task}"]
             print(f"R: {reward:.2f}")
-
-            # breakpoint()
             if i > 0:
                 agent.save(f"model_{i}", logdir)
-        if i % 50 == 0:
 
+        if i % 50 == 0:
             print(
                 "[{:}/{:}]  AL:{:.3f}  VL:{:.3f}  WML:{:.3f}".format(
                     i,
@@ -304,10 +295,17 @@ def train(cfg: dict):
             if cfg.general.run_wandb:
                 wandb.log(metrics)
 
-    # TODO final evaluation
+    metrics = {
+        "iteration": cfg.epochs,
+        "total_time": time() - start_time,
+    }
+    metrics.update(eval(agent, env, task[0].item(), cfg.general.eval_runs))
+    reward = metrics[f"episode_reward+{task}"]
+    print(f"Final reward: {reward:.2f}")
 
     agent.save(f"model_final", logdir)
     if cfg.general.run_wandb:
+        wandb.log(metrics)
         wandb.finish()
     print("\nTraining completed successfully")
 

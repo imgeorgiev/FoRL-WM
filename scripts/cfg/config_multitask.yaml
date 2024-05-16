@@ -25,7 +25,7 @@ wandb:
   group: 
 
 obs: state
-task: hopper-hop
+task: reacher-easy
 seed: ${general.seed}
 tasks: ???
 multitask: True
@@ -40,13 +40,13 @@ episode_lengths: ???
 seed_steps: ???
 bin_size: ???
 epochs: 10_000
-eval_freq: 500
-horizon: 16
+eval_freq: 1000
+horizon: 3
 data_dir: /storage/coda1/p-agarg35/0/shared/tdmpc2-datasets/mt80
 
 buffer:
   _target_: forl.utils.buffer.Buffer
   buffer_size: ???
-  batch_size: 1024
+  batch_size: 64
   horizon: ${horizon}
   device: ${general.device}
