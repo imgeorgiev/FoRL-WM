@@ -263,6 +263,7 @@ def train(cfg: dict):
     # train from dataset
     start_time = time()
     task_ids = torch.tensor([task_id] * cfg.buffer.batch_size, device=agent.device)
+    metrics_log = []
     for i in range(cfg.epochs):
         obs, act, rew = buffer.sample()
         # obs = obs.reshape((-1, obs.shape[-1]))
@@ -295,6 +296,8 @@ def train(cfg: dict):
                 )
             )
 
+            metrics_log.append(metrics)
+
             if cfg.general.run_wandb:
                 wandb.log(metrics)
 
@@ -304,10 +307,6 @@ def train(cfg: dict):
     metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
     reward = metrics[f"episode_reward+{task}"]
     print(f"Final reward: {reward:.2f}")
-    metrics["episode_reward"] = metrics[f"episode_reward+{task}"]
-    metrics["episode_success"] = metrics[f"episode_success+{task}"]
-    del metrics[f"episode_reward+{task}"]
-    del metrics[f"episode_success+{task}"]
 
     # Now do planning
     agent.planning = True
@@ -321,7 +320,8 @@ def train(cfg: dict):
         wandb.finish()
     print("\nTraining completed successfully")
 
-    df = pd.DataFrame(metrics, index=[0])
+    metrics_log.append(metrics)
+    df = pd.DataFrame(metrics_log)
     df.to_csv(f"{logdir}/{task}_results.csv")
 
 

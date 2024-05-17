@@ -1,16 +1,16 @@
 defaults:
   - _self_
   - alg: fowm3_48M
-  - override hydra/launcher: submitit_slurm
+  # - override hydra/launcher: submitit_local
 
-hydra:
-  launcher:
-    nodes: 3
-    mem_per_gpu: 48
-    timeout_min: 480
-    qos: embers
-    gres: "gpu:RTX_6000:1"
-    account: gts-agarg35
+# hydra:
+#   launcher:
+#     nodes: 3
+#     mem_per_gpu: 48
+#     timeout_min: 480
+#     qos: embers
+#     gres: "gpu:RTX_6000:1"
+#     account: gts-agarg35
 
 general:
   train: True

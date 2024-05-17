@@ -311,17 +311,33 @@ class FOWM:
 
             if torch.any(torch.isnan(rew)):
                 print_warning("NaN reward from model!")
-                rew = torch.nan_to_num(rew)
+                rew = torch.nan_to_num(rew, 0.0, 0.0, 0.0)
 
             # sanity check; remove?
             if (~torch.isfinite(obs)).sum() > 0:
                 print_warning("Got inf obs from sim")
-                obs[~torch.isfinite(obs)] = 0.0
+                nan_idx = torch.any(~torch.isfinite(obs), dim=-1)
+                obs[nan_idx] = 0.0
+
+            if (~torch.isfinite(real_obs)).sum() > 0:
+                print_warning("Got inf real_obs from sim")
+                nan_idx = torch.any(~torch.isfinite(real_obs), dim=-1)
+                real_obs[nan_idx] = 0.0
+
+            nan_idx = torch.any(real_obs.abs() > 1e6, dim=-1)
+            if nan_idx.sum() > 0:
+                print_warning("Got large real_obs from sim")
+                real_obs[nan_idx] = 0.0
+
+            nan_idx = torch.any(obs.abs() > 1e6, dim=-1)
+            if nan_idx.sum() > 0:
+                print_warning("Got large obs from sim")
+                obs[nan_idx] = 0.0
 
             # sanity check; remove?
             if (~torch.isfinite(gt_rew)).sum() > 0:
                 print_warning("Got inf rew from sim")
-                gt_rew[~torch.isfinite(gt_rew)] = 0.0
+                gt_rew = torch.nan_to_num(gt_rew, 0.0, 0.0, 0.0)
 
             # log data to buffer
             with torch.no_grad():
@@ -768,6 +784,10 @@ class FOWM:
             for i in range(0, iters):
                 obs, act, rew = self.buffer.sample()
 
+                if torch.any(torch.isnan(obs)):
+                    print("WARN: NaN obs sampled!")
+                    obs = torch.nan_to_num(obs)
+
                 if torch.any(torch.isnan(rew)):
                     print("WARN: NaN reward sampled!")
 
@@ -944,17 +964,17 @@ class FOWM:
         #     if checkpoint["rew_rms"] is not None
         #     else None
         # )
-        # NOTE: commented out so that ret_rms works when loading a pre-trained world model
+        # # NOTE: commented out so that ret_rms works when loading a pre-trained world model
         # self.ret_rms = (
         #     checkpoint["ret_rms"].to(self.device)
         #     if checkpoint["ret_rms"] is not None
         #     else None
         # )
         # need to also load last learning rates as they will be used to continue training
-        self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
-        self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
-        self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
-        self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
+        # self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
+        # self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
+        # self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
+        # self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
         self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
         self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
 
