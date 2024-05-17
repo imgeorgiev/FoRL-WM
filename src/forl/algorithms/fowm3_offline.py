@@ -52,6 +52,14 @@ class FOWM:
         device: str = "cuda",
         save_data: bool = False,
         detach: bool = False,
+        planning: bool = False,
+        num_pi_trajs: int = 24,
+        num_samples: int = 512,
+        min_std: float = 0.05,
+        max_std: float = 2.0,
+        iterations: int = 6,
+        num_elites: int = 64,
+        temperature: float = 0.5,
     ):
         # sanity check parameters
         assert horizon > 0
@@ -69,6 +77,16 @@ class FOWM:
         self.latent_dim = latent_dim
         self.device = torch.device(device)
         self.save_data = save_data
+
+        # planning
+        self.planning = planning
+        self.num_pi_trajs = num_pi_trajs
+        self.num_samples = num_samples
+        self.min_std = min_std
+        self.max_std = max_std
+        self.iterations = iterations
+        self.num_elites = num_elites
+        self.temperature = temperature
 
         self.horizon = horizon
         self.actor_lr = actor_lr
@@ -221,6 +239,9 @@ class FOWM:
 
         return actor_loss
 
+    def critic_val(self, z):
+        return self.critic(z).min(dim=0).values.squeeze()
+
     @torch.no_grad()
     def compute_target_values(self):
         if self.critic_method == "one-step":
@@ -326,10 +347,10 @@ class FOWM:
         ac_stddev = self.actor.get_logstd().exp().mean().detach().cpu().item()
 
         metrics = {
-            "actor_loss": actor_loss,
-            "value_loss": value_loss,
-            "actor_grad_norm": self.actor_grad_norm_before_clip,
-            "critic_grad_norm": critic_grad_norm,
+            "actor_loss": actor_loss.item(),
+            "value_loss": value_loss.item(),
+            "actor_grad_norm": self.actor_grad_norm_before_clip.item(),
+            "critic_grad_norm": critic_grad_norm.item(),
         }
         if finetune_wm:
             metrics["wm_loss"] = wm_loss
@@ -448,8 +469,113 @@ class FOWM:
             reward_loss.item() / self.horizon,
         )
 
-    def act(self, obs, deterministic=False, task=None):
+    def act(self, obs, t0=False, deterministic=False, task=None):
         obs = torch.tensor(obs, dtype=torch.float32, device=self.device)[None]
         z = self.wm.encode(obs, task)
-        a = self.actor(z, deterministic)
+        if self.planning:
+            a = self.plan(z, t0, deterministic, task)
+        else:
+            a = self.actor(z, deterministic)
         return torch.tanh(a).cpu().detach().flatten()
+
+    @torch.no_grad()
+    def _estimate_value(self, z, actions, task):
+        """Estimate value of a trajectory starting at latent state z and executing given actions."""
+        G, discount = 0, 1
+        for t in range(self.horizon):
+            reward = self.wm.two_hot_inv(self.wm.reward(z, actions[t], task))
+            z = self.wm.next(z, actions[t], task)
+            G += discount * reward
+            discount *= self.gamma
+        return G + discount * self.critic_val(z)[..., None]
+
+    @torch.no_grad()
+    def plan(self, z, t0=False, eval_mode=False, task=None):
+        """
+        Plan a sequence of actions using the learned world model.
+
+        Args:
+                z (torch.Tensor): Latent state from which to plan.
+                t0 (bool): Whether this is the first observation in the episode.
+                eval_mode (bool): Whether to use the mean of the action distribution.
+                task (Torch.Tensor): Task index (only used for multi-task experiments).
+
+        Returns:
+                torch.Tensor: Action to take in the environment.
+        """
+        # Sample policy trajectories
+        if self.num_pi_trajs > 0:
+            pi_actions = torch.empty(
+                self.horizon,
+                self.num_pi_trajs,
+                self.act_dim,
+                device=self.device,
+            )
+            _z = z.repeat(self.num_pi_trajs, 1)
+            for t in range(self.horizon - 1):
+                pi_actions[t] = self.actor(_z)
+                _z = self.wm.next(_z, pi_actions[t], task)
+            pi_actions[-1] = self.actor(_z)
+
+        # Initialize state and parameters
+        z = z.repeat(self.num_samples, 1)
+        mean = torch.zeros(self.horizon, self.act_dim, device=self.device)
+        std = self.max_std * torch.ones(self.horizon, self.act_dim, device=self.device)
+        if not t0:
+            mean[:-1] = self._prev_mean[1:]
+        actions = torch.empty(
+            self.horizon,
+            self.num_samples,
+            self.act_dim,
+            device=self.device,
+        )
+        if self.num_pi_trajs > 0:
+            actions[:, : self.num_pi_trajs] = pi_actions
+
+        # Iterate MPPI
+        for _ in range(self.iterations):
+
+            # Sample actions
+            actions[:, self.num_pi_trajs :] = (
+                mean.unsqueeze(1)
+                + std.unsqueeze(1)
+                * torch.randn(
+                    self.horizon,
+                    self.num_samples - self.num_pi_trajs,
+                    self.act_dim,
+                    device=std.device,
+                )
+            ).clamp(-1, 1)
+            if self.wm.multitask:
+                actions = actions * self.wm._action_masks[task]
+
+            # Compute elite actions
+            value = self._estimate_value(z, actions, task).nan_to_num_(0)
+            elite_idxs = torch.topk(value.squeeze(1), self.num_elites, dim=0).indices
+            elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
+
+            # Update parameters
+            max_value = elite_value.max(0)[0]
+            score = torch.exp(self.temperature * (elite_value - max_value))
+            score /= score.sum(0)
+            mean = torch.sum(score.unsqueeze(0) * elite_actions, dim=1) / (
+                score.sum(0) + 1e-9
+            )
+            std = torch.sqrt(
+                torch.sum(
+                    score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2, dim=1
+                )
+                / (score.sum(0) + 1e-9)
+            ).clamp_(self.min_std, self.max_std)
+            if self.wm.multitask:
+                mean = mean * self.wm._action_masks[task]
+                std = std * self.wm._action_masks[task]
+
+        # Select action
+        score = score.squeeze(1).cpu().numpy()
+        actions = elite_actions[:, np.random.choice(np.arange(score.shape[0]), p=score)]
+        self._prev_mean = mean
+        a, std = actions[0], std[0]
+        if not eval_mode:
+            a += std * torch.randn(self.act_dim, device=std.device)
+        return a.clamp_(-1, 1)

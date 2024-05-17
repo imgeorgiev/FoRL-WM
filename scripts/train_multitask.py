@@ -13,18 +13,9 @@ import torch
 from tqdm import tqdm
 
 import hydra
-from termcolor import colored
 from time import time
 
-from common.parser import parse_cfg
-
-# from common.seed import set_seed
-from common.buffer import Buffer
 from envs import make_env
-from tdmpc2 import TDMPC2
-from trainer.offline_trainer import OfflineTrainer
-from trainer.online_trainer import OnlineTrainer
-from common.logger import Logger
 from forl.utils.common import seeding
 from common import TASK_SET
 from copy import deepcopy
@@ -33,6 +24,7 @@ from hydra.utils import instantiate
 import wandb
 from pathlib import Path
 from glob import glob
+import pandas as pd
 
 from IPython.core import ultratb
 
@@ -162,7 +154,7 @@ def eval(agent, env, task_set, task_idx, eval_episodes):
     for _ in range(eval_episodes):
         obs, done, ep_reward, t = env.reset(task_idx), False, 0, 0
         while not done:
-            action = agent.act(obs, True, task_idx)
+            action = agent.act(obs, t == 0, True, task_idx)
             obs, reward, done, info = env.step(action)
             ep_reward += reward
             t += 1
@@ -264,7 +256,6 @@ def train(cfg: dict):
         print(f"Found {len(td)} episodes in file.")
         if td.shape[0] != 0:
             buffer.add_batch(td)
-            break  # NOTE probably temporary
 
     if buffer.num_eps == 0:
         raise ValueError("No data found for task", task)
@@ -307,19 +298,31 @@ def train(cfg: dict):
             if cfg.general.run_wandb:
                 wandb.log(metrics)
 
-    metrics = {
-        "iteration": cfg.epochs,
-        "total_time": time() - start_time,
-    }
+    agent.save(f"model_final", logdir)
+    print("Final evaluation")
+
     metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
     reward = metrics[f"episode_reward+{task}"]
     print(f"Final reward: {reward:.2f}")
+    metrics["episode_reward"] = metrics[f"episode_reward+{task}"]
+    metrics["episode_success"] = metrics[f"episode_success+{task}"]
+    del metrics[f"episode_reward+{task}"]
+    del metrics[f"episode_success+{task}"]
 
-    agent.save(f"model_final", logdir)
+    # Now do planning
+    agent.planning = True
+    planning_metrics = eval(agent, env, task_set, task_id, cfg.general.eval_runs)
+    metrics["episode_reward_planning"] = planning_metrics[f"episode_reward+{task}"]
+    metrics["episode_success_planning"] = planning_metrics[f"episode_success+{task}"]
+    print(f"Final reward with planning: {metrics['episode_reward_planning']:.2f}")
+
     if cfg.general.run_wandb:
         wandb.log(metrics)
         wandb.finish()
     print("\nTraining completed successfully")
+
+    df = pd.DataFrame(metrics, index=[0])
+    df.to_csv(f"{logdir}/{task}_results.csv")
 
 
 if __name__ == "__main__":
