@@ -17,7 +17,7 @@ tags
 dflex/dflex/kernels*/
 **logs/
 
-**data/
+# **data/
 **.egg-info/
 
 wandb
