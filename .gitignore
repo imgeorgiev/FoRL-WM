@@ -11,8 +11,8 @@ tags
 **/run.sh
 **/logs/
 **/logs
-**/data/
-**/data
+# **/data/
+# **/data
 
 dflex/dflex/kernels*/
 **logs/
