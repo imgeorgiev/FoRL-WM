@@ -4,31 +4,32 @@ defaults:
 # environment
 task: dog-run
 obs: state
+device: cuda
 
 env:
-  _target_: dflex.envs.AntEnv
+  _target_: dflex.envs.SNUHumanoidEnv
   render: False
   device: "cuda"
   num_envs: 1
   stochastic_init: True
   no_grad: True
   episode_length: 500
-  MM_caching_frequency: 16
-  early_termination: True
+  MM_caching_frequency: 8
+  # early_termination: True
 
 # evaluation
 checkpoint: ???
 eval_episodes: 10
-eval_freq: 5000
+eval_freq: 20000
 
 # training
-steps: 10_000_000
+steps: 200_000
 seed_train_steps: 5000
-batch_size: 1024 # default 256. Mine: num_envs * 32
+batch_size: 256 # default 256. Mine: num_envs * 32
 reward_coef: 0.1
 value_coef: 0.1
 consistency_coef: 20
-rho: 0.5 # weight of predicted next states for policy loss
+rho: 0.99 # weight of predicted next states for policy loss
 lr: 3e-4
 enc_lr_scale: 0.3
 grad_clip_norm: 20
@@ -37,10 +38,11 @@ tau: 0.01
 discount_denom: 5
 discount_min: 0.95
 discount_max: 0.995
-buffer_size: 1_000_000 # minimum must be 1000 x num_envs
+buffer_size: 20_000_000 # minimum must be 1000 x num_envs
 exp_name: default
-data_dir: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-ant
+data_dir: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/data/dflex-snuhumanoid
 offline: True
+train_policy: False
 
 # planning
 mpc: False
@@ -66,7 +68,7 @@ vmax: +10
 # architecture
 model_size: ???
 num_enc_layers: 2
-enc_dim: 256
+enc_dim: 512
 num_channels: 32
 mlp_dim: 512
 latent_dim: 512
