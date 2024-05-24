@@ -7,6 +7,7 @@ from tqdm import tqdm
 from forl.models.mlp import mlp, SimNorm
 from torch.optim import Adam
 import torch.nn as nn
+import numpy as np
 
 from IPython.core import ultratb
 import sys
@@ -47,6 +48,7 @@ opt = Adam(model0.parameters(), lr=lr)
 steps = samples // batch_size
 print("Training...")
 model0.train()
+losses0 = []
 with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
     for epoch in tepoch:
         epoch_loss = 0
@@ -60,6 +62,7 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
             loss.backward()
             opt.step()
             epoch_loss += loss.item()
+            losses0.append(loss.item())
         epoch_loss /= steps
         tepoch.set_postfix(loss=epoch_loss)
 
@@ -73,6 +76,7 @@ model = mlp(
     last_layer="normedlinear",
     last_layer_kwargs={"act": SimNorm(8)},
 )
+losses1 = []
 decoder = mlp(32, [], 1, last_layer="linear", last_layer_kwargs={})
 opt = Adam([{"params": model.parameters()}, {"params": decoder.parameters()}], lr=lr)
 print("Training...")
@@ -90,16 +94,17 @@ with tqdm(range(epochs), unit="epoch", total=epochs) as tepoch:
             loss.backward()
             opt.step()
             epoch_loss += loss.item()
+            losses1.append(loss.item())
         epoch_loss /= steps
         tepoch.set_postfix(loss=epoch_loss)
 
 model1 = lambda x: decoder(model(x))
 
-fig, ax1 = plt.subplots(1, 1, figsize=(4, 2.5))
+fig, ax1 = plt.subplots(1, 1, figsize=(3, 2.6))
 
 print("Plotting the problem landscape")
-ax1.plot(xx, -f(x, v, xx, a, t), label=r"Ground Truth")
-models = {0: "MLP", 1: "SimNorm MLP", 2: "Spectral MLP"}
+ax1.plot(xx, -f(x, v, xx, a, t), label=r"$J(\theta)$")
+models = {0: "ReLU", 1: "SimNorm", 2: "Spectral MLP"}
 predictions = {}
 for i, m in enumerate([model0, model1]):
     est = m(xx.unsqueeze(1)).flatten()
@@ -123,10 +128,17 @@ argmin = torch.argmin(est)
 plt.plot(xx[argmin], est.detach()[argmin], color="tab:green", marker="x")
 print(f"Opt error MLP SymNorm {est[argmin]-opt_value}")
 
-ax1.set_ylabel(r"$J(\theta)$")
 ax1.set_xlabel(r"$\theta$")
-ax1.legend()
+ax1.legend(loc="upper center", bbox_to_anchor=(0.5, 1.3))
 
 plt.tight_layout()
-plt.savefig("ball_wall.pdf", bbox_inches="tight")
-# plt.show()
+plt.savefig("ball_wall.pdf", bbox_inches="tight", pad_inches=0)
+
+
+fig, ax = plt.subplots(1, 1, figsize=(3, 2.2))
+cutoff = 1000
+ax.plot(np.array(losses0)[:cutoff], label="ReLU", color="tab:orange")
+ax.plot(np.array(losses1)[:cutoff], label="SimNorm", color="tab:green")
+ax.set_xlabel("Iteration")
+ax.set_ylabel("Loss")
+plt.savefig("ball_wall_losses.pdf", bbox_inches="tight", pad_inches=0)
