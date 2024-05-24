@@ -1,4 +1,4 @@
-_target_: forl.algorithms.fowm4.FOWM
+_target_: forl.algorithms.pwm.PWM
 _recursive_: False
 actor_config:
   _target_: forl.models.actor.ActorStochasticMLP
@@ -6,7 +6,7 @@ actor_config:
   activation_class: nn.Mish
   init_gain: 1.0
   init_logstd: -1.0
-  min_logstd: -2.0
+  min_logstd: -1.427
 critic_config:
   _target_: forl.models.critic.CriticMLP
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
@@ -28,32 +28,30 @@ world_model_config:
         _target_: forl.models.mlp.SimNorm
         simnorm_dim: 8
   reward:
-    last_layer: linear # or spectralnormlinear
+    last_layer: linear
     last_layer_kwargs: {}
 num_critics: 3
 latent_dim: 512
-actor_lr: ${resolve_child:2e-3,${env.shac},actor_lr}
-critic_lr: ${resolve_child:5e-4,${env.shac},critic_lr}
+actor_lr: 5e-4
+critic_lr: 5e-4
 model_lr: 3e-4
 lr_schedule: linear
 obs_rms: False
 rew_rms: True
-ret_rms: False
-critic_iterations: 16 # 16 was the tune for H=32
+ret_rms: True
+critic_iterations: 8
 critic_batches: 4
 critic_method: td-lambda # ('td-lambda', 'one-step')
 lam: 0.95
 gamma: 0.99
-max_epochs: ${resolve_child:2000,${env.shac},max_epochs}
+max_epochs: 15_000 # assuming 64 actor batch size / num envs
 horizon: 16
 actor_grad_norm: 1.0 # Can also be none
-critic_grad_norm: 100.0 # Can also be none
+critic_grad_norm: 100.0 # Can also be none; doesn't matter
 wm_batch_size: 256
-wm_iterations: 4 # 1 is bad but too much is unnecessary
+wm_iterations: 8
 wm_grad_norm: 20.0
-wm_buffer_size: 10_000_000
-with_terminate: False # doesn't work right now
-save_interval: ${resolve_child:400,${env.shac},save_interval}
+wm_buffer_size: 1_000_000
+detach: True
+save_interval: 2500
 device: ${general.device}
-ent_coef: 0.0 # doesn't help
-detach: False

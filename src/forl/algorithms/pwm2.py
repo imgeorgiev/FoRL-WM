@@ -25,11 +25,10 @@ from forl.models.world_model import WorldModel
 tensordict.set_lazy_legacy(False).set()
 
 
-class FOWM:
+class PWM:
     """
-    Short Horizon Actor Critic (SHAC) algorithm based on the paper
-    Xu et al. Accelerated Policy Learning with Parallel Differentiable Simulation
-    https://arxiv.org/abs/2204.07137
+    Policy learning through World Models.
+    Version that does per-step imaging and learning
     """
 
     def __init__(

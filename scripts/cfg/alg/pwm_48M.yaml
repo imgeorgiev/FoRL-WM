@@ -1,4 +1,4 @@
-_target_: forl.algorithms.fowm3_offline.FOWM
+_target_: forl.algorithms.pwm_offline.PWM
 _recursive_: False
 actor_config:
   _target_: forl.models.actor.ActorStochasticMLP
@@ -13,8 +13,8 @@ critic_config:
   activation_class: nn.Mish
 world_model_config:
   _target_: forl.models.world_model.WorldModel
-  units: [4096, 4096]
-  encoder_units: [4096, 4096, 4096, 4096]
+  units: [1792, 1792]
+  encoder_units: [1792, 1792, 1792]
   num_bins: 101
   vmin: -10.0
   vmax: 10.0
@@ -38,7 +38,7 @@ world_model_config:
     last_layer: linear
     last_layer_kwargs: {}
 num_critics: 3
-latent_dim: 1376
+latent_dim: 768
 actor_lr: 5e-4 #${resolve_child:2e-3,${env.shac},actor_lr}
 critic_lr: 5e-4 #${resolve_child:5e-4,${env.shac},critic_lr}
 model_lr: 3e-4
@@ -63,3 +63,4 @@ detach: True
 # save_interval: 500
 device: ${general.device}
 planning: False
+num_pi_trajs: 170

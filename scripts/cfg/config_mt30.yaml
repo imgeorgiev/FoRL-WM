@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - alg: fowm3_48M
+  - alg: pwm_48M
   # - override hydra/launcher: submitit_local
 
 # hydra:
