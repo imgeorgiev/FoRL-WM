@@ -18,15 +18,11 @@ world_model_config:
   encoder:
     last_layer: normedlinear
     last_layer_kwargs:
-      act:
-        _target_: forl.models.mlp.SimNorm
-        simnorm_dim: 8
+      act: 
   dynamics:
     last_layer: normedlinear
     last_layer_kwargs:
-      act:
-        _target_: forl.models.mlp.SimNorm
-        simnorm_dim: 8
+      act: 
   reward:
     last_layer: linear
     last_layer_kwargs: {}
@@ -53,5 +49,5 @@ wm_iterations: 8
 wm_grad_norm: 20.0
 wm_buffer_size: 1_000_000
 detach: True
-save_interval: 2500
+save_interval: ${resolve_child:400,${env.shac},save_interval}
 device: ${general.device}

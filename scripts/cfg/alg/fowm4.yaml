@@ -12,22 +12,9 @@ critic_config:
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
   activation_class: nn.Mish
 world_model_config:
-  _target_: forl.models.world_model.WorldModel
+  _target_: forl.models.world_model_terminate.WorldModel
   units: [512, 512]
   encoder_units: [256]
-  # last_layer: linear # or spectralnormlinear
-  # last_layer_kwargs: {}
-  # last_layer: normedlinear
-  # last_layer_kwargs:
-  #   act:
-  #     _target_: forl.models.mlp.SimNorm
-  #     simnorm_dim: 8
-  # last_layer: spectralnormlinear
-  # last_layer_kwargs:
-  #   layer_norm: True
-  #   act:
-  #     _target_: forl.models.mlp.SimNorm
-  #     simnorm_dim: 8
   encoder:
     last_layer: normedlinear
     last_layer_kwargs:

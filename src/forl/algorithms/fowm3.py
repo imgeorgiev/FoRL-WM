@@ -947,11 +947,10 @@ class FOWM:
     def load(self, path, buffer=False):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
-        # NOTE temporary for benchmarking
-        # self.actor.load_state_dict(checkpoint["actor"])
-        # self.actor.to(self.device)
-        # self.critic.load_state_dict(checkpoint["critic"])
-        # self.critic.to(self.device)
+        self.actor.load_state_dict(checkpoint["actor"])
+        self.actor.to(self.device)
+        self.critic.load_state_dict(checkpoint["critic"])
+        self.critic.to(self.device)
         self.wm.load_state_dict(checkpoint["world_model"])
         self.wm.to(self.device)
         self.obs_rms = (
@@ -959,22 +958,21 @@ class FOWM:
             if checkpoint["obs_rms"] is not None
             else None
         )
-        # self.rew_rms = (
-        #     checkpoint["rew_rms"].to(self.device)
-        #     if checkpoint["rew_rms"] is not None
-        #     else None
-        # )
-        # # NOTE: commented out so that ret_rms works when loading a pre-trained world model
-        # self.ret_rms = (
-        #     checkpoint["ret_rms"].to(self.device)
-        #     if checkpoint["ret_rms"] is not None
-        #     else None
-        # )
+        self.rew_rms = (
+            checkpoint["rew_rms"].to(self.device)
+            if checkpoint["rew_rms"] is not None
+            else None
+        )
+        self.ret_rms = (
+            checkpoint["ret_rms"].to(self.device)
+            if checkpoint["ret_rms"] is not None
+            else None
+        )
         # need to also load last learning rates as they will be used to continue training
-        # self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
-        # self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
-        # self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
-        # self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
+        self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
+        self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
+        self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
+        self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
         self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
         self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
 
@@ -1032,34 +1030,26 @@ class FOWM:
         log_freq = num_iters // 100
         save_at = num_iters // 5
         for i in range(0, num_iters):
-            obs, act, rew, term = self.buffer.sample()
+            obs, act, rew = self.buffer.sample()
             if self.obs_rms:
                 obs = self.obs_rms.normalize(obs)
             if self.rew_rms:
                 rew = self.rew_rms.normalize(rew)
             self.wm_optimizer.zero_grad()
-            # loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-            #     obs, act, rew, term
-            # )
             loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew)
             loss.backward()
             wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
             self.wm_optimizer.step()
-            print(
-                f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}  TL:{term_loss:.3f}",
-                end="\r",
-            )
             if i % log_freq == 0 and self.log:
                 metrics = {
                     "pretrain/wm_loss": loss.item(),
                     "pretrain/wm_grad_norm": wm_grad_norm,
                     "pretrain/dynamics_loss": dyn_loss,
                     "pretrain/reward_loss": rew_loss,
-                    # "pretrain/term_loss": term_loss,
                 }
                 wandb.log(metrics, step=i)
                 print(
-                    f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}  TL:{term_loss:.3f}",
+                    f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}",
                 )
 
             if i % save_at == 0:

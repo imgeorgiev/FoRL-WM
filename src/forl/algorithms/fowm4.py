@@ -133,6 +133,7 @@ class FOWM:
             batch_size=self.wm_batch_size,
             horizon=self.horizon,
             device=device,
+            terminate=True,
         )
 
         self.actor_grad_norm = actor_grad_norm
@@ -895,7 +896,7 @@ class FOWM:
             paths = [paths]
         for path in paths:
             print("loading", path)
-            td = torch.load(path)
+            td = torch.load(path).to("cpu")
 
             # fetch stats for normalizing
             if self.obs_rms:
@@ -906,10 +907,12 @@ class FOWM:
                 self.obs_rms.update(obs)
 
             if self.rew_rms:
+                self.rew_rms = self.rew_rms.to("cpu")
                 rew = td["reward"]
                 rew = rew.reshape((-1, 1))
                 rew = torch.nan_to_num(rew)
                 self.rew_rms.update(rew)
+                self.rew_rms = self.rew_rms.to(self.device)
 
             self.buffer.add_batch(td)
 

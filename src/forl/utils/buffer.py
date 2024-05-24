@@ -10,7 +10,7 @@ class Buffer:
     Uses CUDA memory if available, and CPU memory otherwise.
     """
 
-    def __init__(self, buffer_size, batch_size, horizon, device):
+    def __init__(self, buffer_size, batch_size, horizon, device, terminate=False):
         self._device = device
         self._capacity = buffer_size
         self._horizon = horizon
@@ -22,6 +22,7 @@ class Buffer:
         )
         self._batch_size = batch_size * (horizon + 1)
         self._num_eps = 0
+        self.terminate = terminate
 
     @property
     def capacity(self):
@@ -85,9 +86,12 @@ class Buffer:
         obs = td["obs"]
         action = td["action"][1:]
         reward = td["reward"][1:].unsqueeze(-1)
-        # term = td["term"][1:].unsqueeze(-1)
-        # task = td["task"][0] if "task" in td.keys() else None
-        return self._to_device(obs, action, reward)
+        if self.terminate:
+            term = td["term"][1:].unsqueeze(-1)
+            # task = td["task"][0] if "task" in td.keys() else None
+            return self._to_device(obs, action, reward, term)
+        else:
+            return self._to_device(obs, action, reward)
 
     def add(self, td):
         """Add an episode to the buffer."""
