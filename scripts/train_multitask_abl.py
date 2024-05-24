@@ -16,7 +16,7 @@ import hydra
 from time import time
 
 from envs import make_env
-from forl.utils.common import seeding
+from pwm.utils.common import seeding
 from common import TASK_SET
 from copy import deepcopy
 from hydra.core.hydra_config import HydraConfig

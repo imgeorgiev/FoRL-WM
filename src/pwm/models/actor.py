@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
 
-from forl.models import model_utils
+from pwm.models import model_utils
 
 
 class ActorDeterministicMLP(nn.Module):

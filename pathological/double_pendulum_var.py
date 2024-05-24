@@ -5,7 +5,7 @@ import seaborn as sns
 from tqdm import tqdm
 
 from dflex.envs.double_pendulum import DoublePendulumEnv
-from forl.utils.common import seeding
+from pwm.utils.common import seeding
 
 # TDMPC libraries
 from tdmpc2 import TDMPC2
@@ -44,9 +44,9 @@ def main(cfg: dict):
     samples = 100
 
     model_paths = {
-        "TDMPC": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/100/pretrain_baseline/models/15000.pt",
-        "TDMPC_no_sn": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/200/pretrain_baseline/models/15000.pt",
-        "TDMPC_simple": "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/300/pretrain_tdmpc_simple/models/15000.pt",
+        "TDMPC": "TODO",
+        "TDMPC_no_sn": "TODO",
+        "TDMPC_simple": "TODO",
     }
 
     tdmpcs = {}

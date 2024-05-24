@@ -1,13 +1,13 @@
-_target_: forl.algorithms.shac.SHAC
+_target_: pwm.algorithms.shac.SHAC
 _recursive_: False
 actor_config:
-  _target_: forl.models.actor.ActorStochasticMLP
+  _target_: pwm.models.actor.ActorStochasticMLP
   units: ${resolve_child:[400, 200, 100],${env.shac.actor_mlp},units}
   activation_class: nn.Mish
   init_gain: 1.0
   init_logstd: -1.0
 critic_config:
-  _target_: forl.models.critic.CriticMLP
+  _target_: pwm.models.critic.CriticMLP
   units: ${resolve_child:[400, 200],${env.shac.critic_mlp},units}
   activation_class: nn.Mish
 num_critics: 3

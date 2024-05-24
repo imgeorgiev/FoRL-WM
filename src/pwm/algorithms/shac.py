@@ -8,25 +8,22 @@ from torch.nn.utils.clip_grad import clip_grad_norm_
 from gym import Env
 import tensordict
 from tensordict import TensorDict
-import torch.nn.functional as F
-from collections import OrderedDict
-
-
-from forl.utils.common import *
-import forl.utils.torch_utils as tu
-from forl.utils.running_mean_std import RunningMeanStd
-from forl.utils.dataset import CriticDataset
-from forl.utils.time_report import TimeReport
-from forl.utils.average_meter import AverageMeter
-from forl.models.model_utils import Ensemble
-from forl.utils.buffer import Buffer
+from pwm.utils.common import *
+import pwm.utils.torch_utils as tu
+from pwm.utils.running_mean_std import RunningMeanStd
+from pwm.utils.dataset import CriticDataset
+from pwm.utils.time_report import TimeReport
+from pwm.utils.average_meter import AverageMeter
+from pwm.models.model_utils import Ensemble
 
 tensordict.set_lazy_legacy(False).set()
 
 
-class PWM:
+class SHAC:
     """
-    Policy learning through World Models
+    Short Horizon Actor Critic (SHAC) algorithm based on the paper
+    Xu et al. Accelerated Policy Learning with Parallel Differentiable Simulation
+    https://arxiv.org/abs/2204.07137
     """
 
     def __init__(
@@ -34,36 +31,27 @@ class PWM:
         env: Env,
         actor_config: DictConfig,
         critic_config: DictConfig,
-        world_model_config: DictConfig,
         horizon: int,  # horizon for short rollouts
         max_epochs: int,  # number of short rollouts to do (i.e. epochs)
         logdir: str,
-        latent_dim: int,
         actor_grad_norm: Optional[float] = None,  # clip grad norms during training
         critic_grad_norm: Optional[float] = None,  # clip grad norms during training
         num_critics: int = 3,  # for critic ensembling
         actor_lr: float = 2e-3,
         critic_lr: float = 2e-3,
-        model_lr: float = 2e-3,
         betas: Tuple[float, float] = (0.7, 0.95),
         lr_schedule: str = "linear",
         gamma: float = 0.99,  # discount factor
         lam: float = 0.95,  # for TD(lambda)
         obs_rms: bool = False,  # running normalization of observations
-        rew_rms: bool = False,
         ret_rms: bool = False,  # running normalization of returns
         critic_iterations: int = 16,
         critic_batches: int = 4,
         critic_method: str = "td-lambda",
-        wm_batch_size: int = 256,
-        wm_iterations: int = 8,
-        wm_grad_norm: float = 20.0,
-        wm_buffer_size: int = 1_000_000,
         save_interval: int = 500,  # how often to save policy
         device: str = "cuda",
         save_data: bool = False,
         log: bool = False,
-        detach: bool = False,
     ):
         # sanity check parameters
         assert horizon > 0
@@ -82,36 +70,28 @@ class PWM:
         self.num_envs = self.env.num_envs
         self.num_obs = self.env.observation_space.shape[0]
         self.num_actions = self.env.action_space.shape[0]
-        self.latent_dim = latent_dim
         self.device = torch.device(device)
         self.save_data = save_data
-        self.episode_data = [None] * self.num_envs
+        if save_data:
+            self.episode_data = []
+            if env.early_termination:
+                raise RuntimeError("Environment should not have early_termination=True")
 
         self.horizon = horizon
         self.max_epochs = max_epochs
         self.actor_lr = actor_lr
         self.critic_lr = critic_lr
-        self.model_lr = model_lr
         self.lr_schedule = lr_schedule
         self.gamma = gamma
         self.lam = lam
-        self.detach = detach
 
         self.critic_method = critic_method
         self.critic_iterations = critic_iterations
         self.critic_batch_size = self.num_envs * self.horizon // critic_batches
-        self.wm_iterations = wm_iterations
-        self.wm_batch_size = wm_batch_size
-        self.wm_grad_norm = wm_grad_norm
-        self.wm_bootstrapped = False
 
         self.obs_rms = None
         if obs_rms:
             self.obs_rms = RunningMeanStd(shape=(self.num_obs,), device=self.device)
-
-        self.rew_rms = None
-        if rew_rms:
-            self.rew_rms = RunningMeanStd(shape=(1,), device=self.device)
 
         self.ret_rms = None
         if ret_rms:
@@ -119,14 +99,6 @@ class PWM:
 
         self.env_name = self.env.__class__.__name__
         self.name = self.__class__.__name__ + "_" + self.env_name
-
-        # Buffer contains un-normalized data
-        self.buffer = Buffer(
-            buffer_size=wm_buffer_size,
-            batch_size=self.wm_batch_size,
-            horizon=self.horizon,
-            device=device,
-        )
 
         self.actor_grad_norm = actor_grad_norm
         self.critic_grad_norm = critic_grad_norm
@@ -139,25 +111,18 @@ class PWM:
         # Create actor and critic
         self.actor = instantiate(
             actor_config,
-            obs_dim=latent_dim,
+            obs_dim=self.num_obs,
             action_dim=self.num_actions,
         ).to(self.device)
 
         critics = [
             instantiate(
                 critic_config,
-                obs_dim=latent_dim,
+                obs_dim=self.num_obs,
             ).to(self.device)
             for _ in range(num_critics)
         ]
         self.critic = Ensemble(critics)
-
-        self.wm = instantiate(
-            world_model_config,
-            observation_dim=self.num_obs,
-            action_dim=self.num_actions,
-            latent_dim=self.latent_dim,
-        ).to(self.device)
 
         # initialize optimizers
         self.actor_optimizer = torch.optim.Adam(
@@ -171,20 +136,9 @@ class PWM:
             betas,
         )
 
-        self.wm_optimizer = torch.optim.Adam(
-            [
-                {"params": self.wm._encoder.parameters()},
-                {"params": self.wm._dynamics.parameters()},
-                {"params": self.wm._reward.parameters()},
-                {"params": self.wm._terminate.parameters()},
-                {"params": (self.wm._task_emb.parameters() if False else [])},
-            ],
-            lr=self.model_lr,
-        )
-
         # replay buffer
         self.obs_buf = torch.zeros(
-            (self.horizon, self.num_envs, latent_dim),
+            (self.horizon, self.num_envs, self.num_obs),
             dtype=torch.float32,
             device=self.device,
         )
@@ -192,9 +146,6 @@ class PWM:
             (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
         )
         self.done_mask = torch.zeros(
-            (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
-        )
-        self.term_buf = torch.zeros(
             (self.horizon, self.num_envs), dtype=torch.float32, device=self.device
         )
         self.next_values = torch.zeros(
@@ -243,13 +194,6 @@ class PWM:
         # timer
         self.time_report = TimeReport()
 
-        # save initial policy for reproducibility
-        self.save("init_policy")
-        # unit test-ish that we can load the policy
-        # self.load(f"{self.log_dir}/init_policy.pt")
-
-        print(self.wm)
-
     @property
     def mean_horizon(self):
         return self.horizon_length_meter.get_mean()
@@ -266,9 +210,12 @@ class PWM:
         actor_loss = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         primal = None
 
+        # copy running mean and std so that we don't change during training
+        if self.obs_rms is not None:
+            obs_rms = copy.deepcopy(self.obs_rms)
+
         # initialize trajectory to cut off gradients between epochs
         try:
-            # Note this doesn't reset the env, just re-inits the gradients
             obs = self.env.reset(grads=True)
         except:
             print_error(
@@ -277,10 +224,9 @@ class PWM:
             raise AttributeError
 
         # update and normalize obs
-        if self.obs_rms:
-            obs = self.obs_rms.normalize(obs)
-
-        z = self.wm.encode(obs, task=None)
+        if self.obs_rms is not None:
+            self.obs_rms.update(obs)
+            obs = obs_rms.normalize(obs)
 
         # keeps track of the current length of the rollout
         rollout_len = torch.zeros((self.num_envs,), device=self.device)
@@ -289,108 +235,68 @@ class PWM:
         for i in range(self.horizon):
             # collect data for critic training
             with torch.no_grad():
-                self.obs_buf[i] = z.clone()
+                self.obs_buf[i] = obs.clone()
 
             # act in environment
-            if self.detach:
-                actions = self.actor(z.detach(), deterministic=deterministic)
-            else:
-                actions = self.actor(z, deterministic=deterministic)
-
-            actions = torch.tanh(actions)
-            # TODO really move tanh inside actor
-            z, rew, term = self.wm.step(z, actions, task=None)
-            obs, gt_rew, gt_done, info = self.env.step(actions)
+            actions = self.actor(obs, deterministic=deterministic)
+            obs, rew, done, info = self.env.step(torch.tanh(actions))
             term = info["termination"]
-            gt_term = info["termination"]
-            gt_trunc = info["truncation"]
+            trunc = info["truncation"]
             real_obs = info["obs_before_reset"]
             primal = info["primal"]
 
-            if torch.any(torch.isnan(rew)):
-                print_warning("NaN reward from model!")
-                rew = torch.nan_to_num(rew, 0.0, 0.0, 0.0)
-
-            # sanity check; remove?
-            if (~torch.isfinite(obs)).sum() > 0:
-                print_warning("Got inf obs from sim")
-                nan_idx = torch.any(~torch.isfinite(obs), dim=-1)
-                obs[nan_idx] = 0.0
-
-            if (~torch.isfinite(real_obs)).sum() > 0:
-                print_warning("Got inf real_obs from sim")
-                nan_idx = torch.any(~torch.isfinite(real_obs), dim=-1)
-                real_obs[nan_idx] = 0.0
-
-            nan_idx = torch.any(real_obs.abs() > 1e6, dim=-1)
-            if nan_idx.sum() > 0:
-                print_warning("Got large real_obs from sim")
-                real_obs[nan_idx] = 0.0
-
-            nan_idx = torch.any(obs.abs() > 1e6, dim=-1)
-            if nan_idx.sum() > 0:
-                print_warning("Got large obs from sim")
-                obs[nan_idx] = 0.0
-
-            # sanity check; remove?
-            if (~torch.isfinite(gt_rew)).sum() > 0:
-                print_warning("Got inf rew from sim")
-                gt_rew = torch.nan_to_num(gt_rew, 0.0, 0.0, 0.0)
-
-            # log data to buffer
-            with torch.no_grad():
-
-                for j in range(self.num_envs):
+            if self.save_data:
+                with torch.no_grad():
                     td = TensorDict(
                         dict(
-                            obs=real_obs[j].unsqueeze(0),
-                            action=actions[j].unsqueeze(0),
-                            reward=gt_rew[j][None],
-                            term=gt_term[j][None],
+                            obs=real_obs.clone().unsqueeze(0),
+                            action=actions.clone().unsqueeze(0),
+                            reward=rew.clone().unsqueeze(0),
                         ),
                         (1,),
                     )
-                    self.episode_data[j].append(td)
+                    self.per_episode_data.append(td)
 
-                gt_done_env_ids = gt_done.nonzero(as_tuple=False).squeeze(-1)
-                for j in gt_done_env_ids:
-                    td = torch.cat(self.episode_data[j])
-                    self.buffer.add(td)
+                    if done.all():
+                        print("Episode terminated and dumping data")
+                        data = TensorDict(
+                            torch.cat(self.per_episode_data),
+                            batch_size=(self.env.episode_length + 1, self.num_envs),
+                        ).permute(1, 0)
+                        self.episode_data.append(data)
 
-                    # reinint data tracker with with nan action and rewards
-                    a = torch.full_like(torch.zeros(1, self.num_actions), torch.nan).to(
-                        self.device
-                    )
-                    r = torch.full_like(
-                        torch.zeros(
-                            1,
-                        ),
-                        torch.nan,
-                    ).to(self.device)
-                    tt = torch.full_like(
-                        torch.zeros(
-                            1,
-                        ),
-                        torch.nan,
-                        dtype=torch.bool,
-                    ).to(self.device)
-                    td = TensorDict(
-                        dict(obs=obs[j].unsqueeze(0), action=a, reward=r, term=tt),
-                        (1,),
-                    )
-                    self.episode_data[j] = [td]
+                        # now need to reset per_episode_data
+                        self.per_episode_data = []
+
+                        # save data with nan action and rewards
+                        a = torch.full_like(
+                            torch.zeros(1, self.num_envs, self.num_actions), torch.nan
+                        ).to(self.device)
+                        r = torch.full_like(
+                            torch.zeros(1, self.num_envs), torch.nan
+                        ).to(self.device)
+                        td = TensorDict(
+                            dict(obs=obs.clone().unsqueeze(0), action=a, reward=r), (1,)
+                        )
+                        self.per_episode_data = [td]
 
             with torch.no_grad():
-                raw_rew = gt_rew.clone()
+                raw_rew = rew.clone()
 
             # update and normalize obs
-            if self.obs_rms:
-                obs = self.obs_rms.normalize(obs)
+            if self.obs_rms is not None:
+                self.obs_rms.update(obs)
+                obs = obs_rms.normalize(obs)
+                real_obs = obs_rms.normalize(real_obs)
 
             self.episode_length += 1
             rollout_len += 1
 
-            next_values[i + 1] = self.critic(z).min(dim=0).values.squeeze()
+            # sanity check
+            if (~torch.isfinite(real_obs)).sum() > 0:
+                print_warning("Got inf obs")
+
+            next_values[i + 1] = self.critic(real_obs).min(dim=0).values.squeeze()
 
             # handle terminated environments which stopped for some bad reason
             # since the reason is bad we set their value to 0
@@ -405,19 +311,11 @@ class PWM:
 
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
 
-            done = gt_term | gt_trunc  # NOTE TEMPORARY
+            done = term | trunc
             done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-            gt_done = gt_term | gt_trunc
-            gt_done_env_ids = gt_done.nonzero(as_tuple=False).squeeze(-1)
-
-            # for all done envs we reset observations and cut off gradients
-            # Note this is important to do after critic next value compuataion!
-            # TODO should I do the below conditionally?
-            gt_z = self.wm.encode(obs, task=None)
-            z = torch.where(done[..., None], gt_z, z)
 
             self.early_termination += torch.sum(term).item()
-            self.episode_end += torch.sum(gt_trunc).item()
+            self.episode_end += torch.sum(trunc).item()
 
             if i < self.horizon - 1:
                 # first terminate all rollouts which are 'done'
@@ -446,10 +344,9 @@ class PWM:
             with torch.no_grad():
                 self.rew_buf[i] = rew.clone()
                 if i < self.horizon - 1:
-                    self.done_mask[i] = gt_done.clone().to(torch.float32)
+                    self.done_mask[i] = done.clone().to(torch.float32)
                 else:
                     self.done_mask[i, :] = 1.0
-                self.term_buf[i] = gt_term.clone().to(torch.float32)
                 self.next_values[i] = next_values[i + 1].clone()
 
             # collect episode loss
@@ -461,21 +358,21 @@ class PWM:
                 self.episode_gamma *= self.gamma
 
                 # dump data from done episodes
-                self.episode_loss_meter.update(self.episode_loss[gt_done_env_ids])
+                self.episode_loss_meter.update(self.episode_loss[done_env_ids])
                 self.episode_discounted_loss_meter.update(
-                    self.episode_discounted_loss[gt_done_env_ids]
+                    self.episode_discounted_loss[done_env_ids]
                 )
-                self.episode_primal_meter.update(self.episode_primal[gt_done_env_ids])
-                self.episode_length_meter.update(self.episode_length[gt_done_env_ids])
-                self.horizon_length_meter.update(rollout_len[gt_done_env_ids])
+                self.episode_primal_meter.update(self.episode_primal[done_env_ids])
+                self.episode_length_meter.update(self.episode_length[done_env_ids])
+                self.horizon_length_meter.update(rollout_len[done_env_ids])
 
                 # reset trackers
-                rollout_len[gt_done_env_ids] = 0
-                self.episode_loss[gt_done_env_ids] = 0.0
-                self.episode_discounted_loss[gt_done_env_ids] = 0.0
-                self.episode_primal[gt_done_env_ids] = 0.0
-                self.episode_length[gt_done_env_ids] = 0
-                self.episode_gamma[gt_done_env_ids] = 1.0
+                rollout_len[done_env_ids] = 0
+                self.episode_loss[done_env_ids] = 0.0
+                self.episode_discounted_loss[done_env_ids] = 0.0
+                self.episode_primal[done_env_ids] = 0.0
+                self.episode_length[done_env_ids] = 0
+                self.episode_gamma[done_env_ids] = 1.0
 
         self.horizon_length_meter.update(rollout_len)
 
@@ -508,20 +405,15 @@ class PWM:
         )
 
         obs = self.env.reset()
-        if self.obs_rms is not None:
-            obs = self.obs_rms.normalize(obs)
-        z = self.wm.encode(obs, task=None)
 
         games_cnt = 0
         while games_cnt < num_games:
-            # if self.obs_rms is not None:
-            #     obs = self.obs_rms.normalize(obs)
+            if self.obs_rms is not None:
+                obs = self.obs_rms.normalize(obs)
 
-            actions = self.actor(z, deterministic=deterministic)
-            actions = torch.tanh(actions)
-            z, rew, trunc = self.wm.step(z, actions, task=None)
+            actions = self.actor(obs, deterministic=deterministic)
 
-            _, _, done, _ = self.env.step(actions)
+            obs, rew, done, _ = self.env.step(torch.tanh(actions))
 
             episode_length += 1
 
@@ -592,6 +484,8 @@ class PWM:
 
     def train(self):
 
+        self.save("init_policy")
+
         self.start_time = time.time()
 
         # add timers
@@ -602,7 +496,6 @@ class PWM:
         self.time_report.add_timer("prepare critic dataset")
         self.time_report.add_timer("actor training")
         self.time_report.add_timer("critic training")
-        self.time_report.add_timer("world model training")
         self.time_report.start_timer("algorithm")
 
         # initializations
@@ -622,32 +515,21 @@ class PWM:
         self.episode_gamma = torch.ones(
             self.num_envs, dtype=torch.float32, device=self.device
         )
+        self.per_episode_data = []
 
-        with torch.no_grad():
-            # save data with nan action and rewards
-
-            for id in range(self.num_envs):
-                act = torch.full_like(torch.zeros(1, self.num_actions), torch.nan).to(
+        if self.save_data:
+            with torch.no_grad():
+                # save data with nan action and rewards
+                act = torch.full_like(
+                    torch.zeros(1, self.num_envs, self.num_actions), torch.nan
+                ).to(self.device)
+                rew = torch.full_like(torch.zeros(1, self.num_envs), torch.nan).to(
                     self.device
                 )
-                rew = torch.full_like(
-                    torch.zeros(
-                        1,
-                    ),
-                    torch.nan,
-                ).to(self.device)
-                term = torch.full_like(
-                    torch.zeros(
-                        1,
-                    ),
-                    torch.nan,
-                    dtype=torch.bool,
-                ).to(self.device)
                 td = TensorDict(
-                    dict(obs=obs[id].unsqueeze(0), action=act, reward=rew, term=term),
-                    (1,),
+                    dict(obs=obs.clone().unsqueeze(0), action=act, reward=rew), (1,)
                 )
-                self.episode_data[id] = [td]
+                self.per_episode_data.append(td)
 
         def actor_closure():
             self.actor_optimizer.zero_grad()
@@ -656,8 +538,6 @@ class PWM:
 
             self.time_report.start_timer("forward simulation")
             actor_loss = self.compute_actor_loss()
-            if torch.isnan(actor_loss):
-                print_error("NaN actor loss")
             self.time_report.end_timer("forward simulation")
 
             self.time_report.start_timer("backward simulation")
@@ -672,10 +552,7 @@ class PWM:
             # sanity check
             if torch.isnan(self.actor_grad_norm_before_clip):
                 print_error("NaN gradient")
-                # ugly fix for simulation nan problem
-                for params in self.actor.parameters():
-                    params.grad.nan_to_num_(0.0, 0.0, 0.0)
-                # raise ValueError
+                raise ValueError
 
             self.time_report.end_timer("compute actor loss")
 
@@ -683,37 +560,21 @@ class PWM:
 
         # main training process
         for epoch in range(self.max_epochs):
-
-            if self.buffer.num_eps == 0:
-                with torch.no_grad():
-                    self.compute_actor_loss()
-                continue
-
             time_start_epoch = time.time()
 
             # learning rate schedule
             if self.lr_schedule == "linear":
-                # actor learning rate
                 actor_lr = (1e-5 - self.actor_lr) * float(
                     epoch / self.max_epochs
                 ) + self.actor_lr
                 for param_group in self.actor_optimizer.param_groups:
                     param_group["lr"] = actor_lr
                 lr = actor_lr
-
-                # critic learning rate
                 critic_lr = (1e-5 - self.critic_lr) * float(
                     epoch / self.max_epochs
                 ) + self.critic_lr
                 for param_group in self.critic_optimizer.param_groups:
                     param_group["lr"] = critic_lr
-
-                # world model learning rate
-                model_lr = (1e-5 - self.model_lr) * float(
-                    epoch / self.max_epochs
-                ) + self.model_lr
-                for param_group in self.wm_optimizer.param_groups:
-                    param_group["lr"] = model_lr
             else:
                 lr = self.actor_lr
 
@@ -734,7 +595,6 @@ class PWM:
                 )
             self.time_report.end_timer("prepare critic dataset")
 
-            # critic training!
             self.time_report.start_timer("critic training")
             value_loss = 0.0
             for j in range(self.critic_iterations):
@@ -766,75 +626,6 @@ class PWM:
 
             self.time_report.end_timer("critic training")
 
-            self.time_report.start_timer("world model training")
-
-            # world model training!
-            tot_wm_loss = tot_dynamics_loss = tot_reward_loss = tot_term_loss = 0.0
-            sample_rew_mean = sample_rew_var = 0.0
-            sample_obs_mean = sample_obs_var = 0.0
-            if self.wm_bootstrapped:
-                iters = self.wm_iterations
-            else:
-                iters = self.env.episode_length
-                print(f"training wm for {iters} iterations")
-                self.wm_bootstrapped = True
-
-            for i in range(0, iters):
-                obs, act, rew = self.buffer.sample()
-
-                if torch.any(torch.isnan(obs)):
-                    print("WARN: NaN obs sampled!")
-                    obs = torch.nan_to_num(obs)
-
-                if torch.any(torch.isnan(rew)):
-                    print("WARN: NaN reward sampled!")
-
-                if self.obs_rms:
-                    self.obs_rms.update(obs.reshape((-1, self.num_obs)))
-                    obs = self.obs_rms.normalize(obs)
-
-                if self.rew_rms:
-                    self.rew_rms.update(rew.reshape((-1, 1)))
-                    rew = self.rew_rms.normalize(rew)
-
-                if torch.any(torch.isnan(rew)):
-                    print("WARN: NaN reward post-processed!")
-
-                sample_rew_mean += rew.mean().item()
-                sample_rew_var += rew.var().item()
-                sample_obs_mean += obs.mean(dim=0).mean().item()
-                sample_obs_var += obs.var(dim=0).mean().item()
-
-                self.wm_optimizer.zero_grad()
-                # loss, dyn_loss, rew_loss, term_loss = self.compute_wm_loss(
-                #     obs, act, rew, term
-                # )
-                loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew)
-                loss.backward()
-                wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
-                if torch.isnan(wm_grad_norm):
-                    print_warning("world model NaN gradient")
-                    for params in self.wm.parameters():
-                        params.grad.nan_to_num_(0.0, 0.0, 0.0)
-                self.wm_optimizer.step()
-                tot_wm_loss += loss.item()
-                tot_dynamics_loss += dyn_loss
-                tot_reward_loss += rew_loss
-                # tot_term_loss += term_loss
-                print(f"wm iter {i+1}/{iters}, loss = {loss:.2f}", end="\r")
-
-            # normalize for logging; TODO simplify
-            tot_wm_loss /= iters
-            tot_dynamics_loss /= iters
-            tot_reward_loss /= iters
-            tot_term_loss /= iters
-            sample_rew_mean /= iters
-            sample_rew_var /= iters
-            sample_obs_mean /= iters
-            sample_obs_var /= iters
-
-            self.time_report.end_timer("world model training")
-
             self.iter_count += 1
             time_end_epoch = time.time()
             fps = self.horizon * self.num_envs / (time_end_epoch - time_start_epoch)
@@ -853,10 +644,6 @@ class PWM:
                 "actor_lr": lr,
                 "actor_loss": actor_loss,
                 "value_loss": value_loss,
-                "wm_loss": tot_wm_loss,
-                "dynamics_loss": tot_dynamics_loss,
-                "reward_loss": tot_reward_loss,
-                "term_loss": tot_term_loss,
                 "rollout_len": self.mean_horizon,
                 "fps": fps,
                 "policy_loss": mean_policy_loss,
@@ -868,35 +655,15 @@ class PWM:
                 "actor_std": ac_stddev,
                 "actor_grad_norm": self.actor_grad_norm_before_clip,
                 "critic_grad_norm": critic_grad_norm,
-                "wm_grad_norm": wm_grad_norm,
                 "episode_end": self.episode_end,
                 "early_termination": self.early_termination,
-                "sample_rew_mean": sample_rew_mean,
-                "sample_rew_var": sample_rew_var,
-                "sample_obs_mean": sample_obs_mean,
-                "sample_obs_var": sample_obs_var,
             }
-            if self.rew_rms:
-                metrics.update(
-                    dict(
-                        rew_rms_mean=self.rew_rms.mean.item(),
-                        rew_rms_var=self.rew_rms.var.item(),
-                    )
-                )
-
-            if self.ret_rms:
-                metrics.update(
-                    dict(
-                        ret_rms_mean=self.ret_rms.mean.item(),
-                        ret_rms_var=self.ret_rms.var.item(),
-                    )
-                )
             metrics = filter_dict(metrics)
-            if self.log and (self.iter_count % 50 == 0):
+            if self.log:
                 wandb.log(metrics, step=self.step_count)
 
             print(
-                "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}  wm_loss:{:.2f}  rew_loss:{:.2f}  dyn_loss:{:.2f}".format(
+                "[{:}/{:}]  R:{:.2f}  T:{:.1f}  H:{:.1f}  S:{:}  FPS:{:0.0f}  pi_loss:{:.2f}  pi_grad:{:.2f}/{:.2f}  v_loss:{:.2f}".format(
                     self.iter_count,
                     self.max_epochs,
                     -mean_policy_loss,
@@ -908,9 +675,6 @@ class PWM:
                     self.actor_grad_norm_before_clip,
                     self.actor_grad_norm_after_clip,
                     value_loss,
-                    tot_wm_loss,
-                    tot_reward_loss,
-                    tot_dynamics_loss,
                 )
             )
 
@@ -922,181 +686,38 @@ class PWM:
 
         self.time_report.report()
 
-        self.save("final_policy", buffer=True)
+        self.save("final_policy")
 
-    def save(self, filename, buffer=False):
+        if self.save_data:
+            data = torch.cat(self.episode_data)
+            eps = len(data)
+            torch.save(data, f"{self.log_dir}/ep_data_{self.env_name}_ep{eps}.pt")
+
+    def save(self, filename):
         torch.save(
             {
                 "actor": self.actor.state_dict(),
                 "critic": self.critic.state_dict(),
-                "world_model": self.wm.state_dict(),
                 "obs_rms": self.obs_rms,
-                "rew_rms": self.rew_rms,
                 "ret_rms": self.ret_rms,
-                "actor_opt": self.actor_optimizer.state_dict(),
-                "critic_opt": self.critic_optimizer.state_dict(),
-                "world_model_opt": self.wm_optimizer.state_dict(),
             },
             os.path.join(self.log_dir, "{}.pt".format(filename)),
         )
-        if buffer:
-            self.buffer.save(os.path.join(self.log_dir, "{}.buffer".format(filename)))
 
-    def load(self, path, buffer=False):
+    def load(self, path):
         print("Loading policy from", path)
         checkpoint = torch.load(path)
         self.actor.load_state_dict(checkpoint["actor"])
         self.actor.to(self.device)
         self.critic.load_state_dict(checkpoint["critic"])
         self.critic.to(self.device)
-        self.wm.load_state_dict(checkpoint["world_model"])
-        self.wm.to(self.device)
         self.obs_rms = (
             checkpoint["obs_rms"].to(self.device)
             if checkpoint["obs_rms"] is not None
-            else None
-        )
-        self.rew_rms = (
-            checkpoint["rew_rms"].to(self.device)
-            if checkpoint["rew_rms"] is not None
             else None
         )
         self.ret_rms = (
             checkpoint["ret_rms"].to(self.device)
             if checkpoint["ret_rms"] is not None
             else None
-        )
-        # need to also load last learning rates as they will be used to continue training
-        self.actor_optimizer.load_state_dict(checkpoint["actor_opt"])
-        self.actor_lr = checkpoint["actor_opt"]["param_groups"][0]["lr"]
-        self.critic_optimizer.load_state_dict(checkpoint["critic_opt"])
-        self.critic_lr = checkpoint["critic_opt"]["param_groups"][0]["lr"]
-        self.wm_optimizer.load_state_dict(checkpoint["world_model_opt"])
-        self.model_lr = checkpoint["world_model_opt"]["param_groups"][0]["lr"]
-
-        if buffer:
-            print("Loading buffer too")
-            self.buffer.load(path.replace(".pt", ".buffer"))
-            self.buffer._num_eps = 100  # placeholder to avoid initialization
-
-    def load_wm(self, path):
-        print("Loading world model from", path)
-        checkpoint = torch.load(path)
-        checkpoint = checkpoint["model"]
-        new_odict = OrderedDict()
-        for key, value in checkpoint.items():
-            print(key)
-            if "_pi" in key:
-                pass
-            elif "_Qs" in key:
-                pass
-            else:
-                if "_encoder" in key:
-                    key = key.replace("state.", "")
-                new_odict[key] = value
-        self.wm.load_state_dict(new_odict)
-
-    def pretrain_wm(self, paths, num_iters, actually_train=True):
-        if type(paths) != List:
-            paths = [paths]
-        for path in paths:
-            print("loading", path)
-            td = torch.load(path).to("cpu")
-
-            # fetch stats for normalizing
-            if self.obs_rms:
-                obs = td["obs"]
-                # NOTE: if this fails probably load wrong data
-                obs = obs.reshape((-1, self.num_obs))
-                obs = torch.nan_to_num(obs)
-                self.obs_rms.update(obs)
-
-            if self.rew_rms:
-                self.rew_rms = self.rew_rms.to("cpu")
-                rew = td["reward"]
-                rew = rew.reshape((-1, 1))
-                rew = torch.nan_to_num(rew)
-                self.rew_rms.update(rew)
-                self.rew_rms = self.rew_rms.to(self.device)
-
-            self.buffer.add_batch(td)
-
-        if not actually_train:
-            return
-
-        print(f"Pretraining world model for {num_iters} iters")
-        log_freq = num_iters // 100
-        save_at = num_iters // 5
-        for i in range(0, num_iters):
-            obs, act, rew = self.buffer.sample()
-            if self.obs_rms:
-                obs = self.obs_rms.normalize(obs)
-            if self.rew_rms:
-                rew = self.rew_rms.normalize(rew)
-            self.wm_optimizer.zero_grad()
-            loss, dyn_loss, rew_loss = self.compute_wm_loss(obs, act, rew)
-            loss.backward()
-            wm_grad_norm = clip_grad_norm_(self.wm.parameters(), self.wm_grad_norm)
-            self.wm_optimizer.step()
-            if i % log_freq == 0 and self.log:
-                metrics = {
-                    "pretrain/wm_loss": loss.item(),
-                    "pretrain/wm_grad_norm": wm_grad_norm,
-                    "pretrain/dynamics_loss": dyn_loss,
-                    "pretrain/reward_loss": rew_loss,
-                }
-                wandb.log(metrics, step=i)
-                print(
-                    f"[{i}/{num_iters}]  L:{loss.item():.3f}  GN:{wm_grad_norm:.3f}  DL:{dyn_loss:.3f}  RL:{rew_loss:.3f}",
-                )
-
-            if i % save_at == 0:
-                self.save(f"pretrained_{i}")
-        self.wm_bootstrapped = True
-        self.save("pretrained", buffer=True)
-
-    def compute_wm_loss(self, obs, act, rew):
-        # if term.dtype == torch.bool:
-        #     term = term.float()
-
-        horizon, batch_size, _ = obs.shape
-        assert horizon == self.horizon + 1
-        discount = (
-            (self.gamma ** torch.arange(self.horizon))
-            .view((self.horizon, 1, 1))
-            .to(self.device)
-        )
-
-        # Compute targets
-        with torch.no_grad():
-            next_z = self.wm.encode(obs[1:], task=None)
-
-        # Latent rollout
-        zs = torch.empty(
-            self.horizon + 1,
-            batch_size,
-            self.latent_dim,
-            device=self.device,
-        )
-
-        z = self.wm.encode(obs[0], task=None)
-        zs[0] = z
-
-        dynamics_loss = 0.0
-        for t in range(self.horizon):
-            z = self.wm.next(z, act[t], task=None)
-            dynamics_loss += F.mse_loss(z, next_z[t]) * self.gamma**t
-            zs[t + 1] = z
-
-        _zs = zs[:-1]
-        rew_hat = self.wm.reward(_zs, act, task=None)
-        reward_loss = (rew_hat - rew) ** 2 * discount
-        reward_loss = reward_loss.mean()
-
-        total_loss = dynamics_loss + reward_loss  # + term_loss
-        total_loss /= self.horizon
-        return (
-            total_loss,
-            dynamics_loss / self.horizon,
-            reward_loss.item() / self.horizon,
         )

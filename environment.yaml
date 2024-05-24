@@ -1,4 +1,4 @@
-name: fowm
+name: pwm
 channels:
   - pytorch
   - defaults

@@ -8,11 +8,11 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 
-from forl.utils.common import *
-import forl.utils.torch_utils as tu
-from forl.utils.running_mean_std import RunningMeanStd
-from forl.utils.dataset import CriticDataset
-from forl.models.model_utils import Ensemble
+from pwm.utils.common import *
+import pwm.utils.torch_utils as tu
+from pwm.utils.running_mean_std import RunningMeanStd
+from pwm.utils.dataset import CriticDataset
+from pwm.models.model_utils import Ensemble
 
 tensordict.set_lazy_legacy(False).set()
 

@@ -15,13 +15,13 @@ INSTALL_REQUIRES = ["torch", "omegaconf", "hydra-core", "gym"]
 
 # Installation operation
 setup(
-    name="forl",
-    author="Ignat Georgiev",
-    author_email="ignat.m.georgiev@gmail.com",
+    name="PWM",
+    author="anonymized",
+    author_email="anonymized",
     version="0.1.0",
     long_description=README,
     long_description_content_type="text/markdown",
-    url="https://github.com/pairlab/FoRL",
+    url="anonymized",
     description="A library for for First-order Reinforcement Learning algorithms",
     keywords=["robotics", "rl"],
     include_package_data=True,

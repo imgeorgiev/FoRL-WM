@@ -3,10 +3,10 @@ import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from forl.utils import torch_utils as tu
+from pwm.utils import torch_utils as tu
 
 from dflex.envs.double_pendulum import DoublePendulumEnv
-from forl.utils.common import seeding
+from pwm.utils.common import seeding
 from utils import dflex_jacobian
 from torch.autograd.functional import jacobian
 
@@ -48,10 +48,10 @@ def main(cfg: dict):
 
     # pre-trained TDMPC models; H: model_path
     models = {
-        4: "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-doublependulum/0/pretrain_baseline/models/final.pt",
-        # 8: "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-cartpole/1/pretrain_baseline/models/final.pt",
-        # 16: "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-cartpole/2/pretrain_baseline/models/final.pt",
-        # 32: "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-cartpole/3/pretrain_baseline/models/final.pt",
+        4: "TODO",
+        # 8: "TODO",
+        # 16: "TODO",
+        # 32: "TODO",
     }
     tdmpc.load(models[4])
     seeding(0)

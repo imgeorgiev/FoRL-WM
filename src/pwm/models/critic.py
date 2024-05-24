@@ -2,7 +2,7 @@ from typing import Type, List
 import torch
 import torch.nn as nn
 
-from forl.models import model_utils
+from pwm.models import model_utils
 
 
 class CriticMLP(nn.Module):

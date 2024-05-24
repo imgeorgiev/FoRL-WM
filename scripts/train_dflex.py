@@ -1,8 +1,8 @@
 import hydra, os, wandb, yaml
 from omegaconf import DictConfig, OmegaConf, open_dict
 from hydra.core.hydra_config import HydraConfig
-from forl.utils import hydra_utils
-from forl.utils.common import seeding
+from pwm.utils import hydra_utils
+from pwm.utils.common import seeding
 from hydra.utils import instantiate
 
 from IPython.core import ultratb

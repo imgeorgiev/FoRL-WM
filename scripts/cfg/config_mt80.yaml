@@ -19,15 +19,15 @@ general:
   device: cuda:0
   run_wandb: False
   seed: 42
-  checkpoint: /storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/tdmpc2/multitask/mt80-48M.pt
+  checkpoint: TODO
   checkpoint_with_buffer: False
   eval_runs: 10
   pretrain_steps: 50000
   multitask: True
 
 wandb:
-  project: fowm
-  entity: pair-diffusion
+  project: TODO
+  entity: TODO
   group: 
 
 obs: state
@@ -48,11 +48,11 @@ bin_size: ???
 epochs: 100_000
 eval_freq: 10000
 horizon: 3
-data_dir: /storage/coda1/p-agarg35/0/shared/tdmpc2-datasets/mt80
+data_dir: TODO
 finetune_wm: False
 
 buffer:
-  _target_: forl.utils.buffer.Buffer
+  _target_: pwm.utils.buffer.Buffer
   buffer_size: ???
   batch_size: 1024
   horizon: ${horizon}

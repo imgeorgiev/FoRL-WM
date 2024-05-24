@@ -1,6 +1,6 @@
 from dflex.envs import AntEnv
-from forl.models.actor import ActorDeterministicMLP, ActorStochasticMLP
-from forl.utils.common import seeding
+from pwm.models.actor import ActorDeterministicMLP, ActorStochasticMLP
+from pwm.utils.common import seeding
 import torch
 import sys
 from IPython.core import ultratb
@@ -111,7 +111,7 @@ def main(cfg: dict):
         env.num_obs, env.num_acts, [400, 200, 100], torch.nn.Mish
     ).to(device)
     chkpt = torch.load(
-        "/storage/home/hcoda1/7/igeorgiev3/git/FoRL/scripts/outputs/2024-03-14/15-28-46/logs/best_policy.pt",
+        "TODO",
         map_location=device,
     )
     actor.load_state_dict(chkpt["actor"])
@@ -126,9 +126,7 @@ def main(cfg: dict):
     cfg.action_dim = env.act_space.shape[0]
     cfg.episode_length = env.episode_length
     tdmpc = TDMPC2(cfg)
-    tdmpc.load(
-        "/storage/home/hcoda1/7/igeorgiev3/git/FoWM/wmlab/logs/dflex-ant/1/default/models/20000.pt"
-    )
+    tdmpc.load("TODO")
 
     obs = env.reset()
     obs = env.initialize_trajectory()

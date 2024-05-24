@@ -4,7 +4,7 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
-from forl.models.mlp import mlp, SimNorm
+from pwm.models.mlp import mlp, SimNorm
 from torch.optim import Adam
 import torch.nn as nn
 import numpy as np

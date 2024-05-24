@@ -93,6 +93,6 @@ do
     echo "Running command with parameter: $param"
     # Replace 'your_command' with the actual command you want to run
     # your_command "$param"
-    sbatch run.sh python train_multitask.py --multirun -cn config_mt80 general.run_wandb=True wandb.group=mt80 alg=fowm3_48M task="$param"
+    sbatch run.sh python train_multitask.py --multirun -cn config_mt80 general.run_wandb=True wandb.group=mt80 alg=pwm_48M task="$param"
     sleep 30 # to ensure that the command has finished before running the next one
 done
