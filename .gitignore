@@ -13,6 +13,7 @@ tags
 **/logs
 **/data/
 **/data
+**/.DS_Store
 
 dflex/dflex/kernels*/
 **logs/
