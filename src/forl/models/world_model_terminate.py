@@ -53,6 +53,7 @@ class WorldModel(nn.Module):
         encoder,
         dynamics,
         reward,
+        act=nn.Mish(inplace=True),
         action_dims=None,
         num_bins=None,
         vmin=None,
@@ -75,6 +76,7 @@ class WorldModel(nn.Module):
             observation_dim + task_dim,
             encoder_units,
             latent_dim,
+            act=act,
             last_layer=encoder["last_layer"],
             last_layer_kwargs=encoder["last_layer_kwargs"],
         )
@@ -82,6 +84,7 @@ class WorldModel(nn.Module):
             latent_dim + action_dim + task_dim,
             units,
             latent_dim,
+            act=act,
             last_layer=dynamics["last_layer"],
             last_layer_kwargs=dynamics["last_layer_kwargs"],
         )
@@ -89,6 +92,7 @@ class WorldModel(nn.Module):
             latent_dim + action_dim + task_dim,
             units,
             max(num_bins, 1) if num_bins else 1,
+            act=act,
             last_layer=reward["last_layer"],
             last_layer_kwargs=reward["last_layer_kwargs"],
         )
@@ -96,6 +100,7 @@ class WorldModel(nn.Module):
             latent_dim + action_dim + task_dim,
             units,
             1,
+            act=act,
             last_layer="normedlinear",
             last_layer_kwargs={"act": nn.Sigmoid()},
         )

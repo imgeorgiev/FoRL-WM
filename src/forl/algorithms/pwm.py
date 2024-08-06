@@ -248,7 +248,7 @@ class PWM:
         # unit test-ish that we can load the policy
         # self.load(f"{self.log_dir}/init_policy.pt")
 
-        print(self.wm)
+        # print(self.wm)
 
     @property
     def mean_horizon(self):

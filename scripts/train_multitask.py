@@ -162,8 +162,8 @@ def eval(agent, env, task_set, task_idx, eval_episodes):
         ep_successes.append(info["success"])
     results.update(
         {
-            f"episode_reward+{task_set[task_idx]}": np.nanmean(ep_rewards),
-            f"episode_success+{task_set[task_idx]}": np.nanmean(ep_successes),
+            f"episode_reward": np.nanmean(ep_rewards),
+            f"episode_success": np.nanmean(ep_successes),
         }
     )
     return results
@@ -276,7 +276,7 @@ def train(cfg: dict):
         # Evaluate agent periodically
         if i % cfg.eval_freq == 0:
             metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
-            reward = metrics[f"episode_reward+{task}"]
+            reward = metrics[f"episode_reward"]
             print(f"R: {reward:.2f}")
             if i > 0:
                 agent.save(f"model_{i}", logdir)
@@ -303,14 +303,14 @@ def train(cfg: dict):
     print("Final evaluation")
 
     metrics.update(eval(agent, env, task_set, task_id, cfg.general.eval_runs))
-    reward = metrics[f"episode_reward+{task}"]
+    reward = metrics[f"episode_reward"]
     print(f"Final reward: {reward:.2f}")
 
     # Now do planning
     agent.planning = True
     planning_metrics = eval(agent, env, task_set, task_id, cfg.general.eval_runs)
-    metrics["episode_reward_planning"] = planning_metrics[f"episode_reward+{task}"]
-    metrics["episode_success_planning"] = planning_metrics[f"episode_success+{task}"]
+    metrics["episode_reward_planning"] = planning_metrics[f"episode_reward"]
+    metrics["episode_success_planning"] = planning_metrics[f"episode_success"]
     print(f"Final reward with planning: {metrics['episode_reward_planning']:.2f}")
 
     if cfg.general.run_wandb:

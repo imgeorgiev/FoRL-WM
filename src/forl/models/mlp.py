@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from typing import List, Optional
 from hydra.utils import instantiate
 from torch.nn.utils import parametrizations
+from torch.nn.utils import spectral_norm
 
 
 class NormedLinear(nn.Linear):
@@ -137,7 +138,15 @@ LAYERS = {
 }
 
 
-def mlp(in_dim, mlp_dims, out_dim, last_layer, last_layer_kwargs, dropout=0.0):
+def mlp(
+    in_dim,
+    mlp_dims,
+    out_dim,
+    last_layer,
+    last_layer_kwargs,
+    act=nn.Mish(inplace=True),
+    dropout=0.0,
+):
     """
     Basic building block of TD-MPC2.
     MLP with LayerNorm, Mish activations, and optionally dropout.
@@ -147,7 +156,9 @@ def mlp(in_dim, mlp_dims, out_dim, last_layer, last_layer_kwargs, dropout=0.0):
     dims = [in_dim] + mlp_dims + [out_dim]
     mlp = nn.ModuleList()
     for i in range(len(dims) - 2):
-        mlp.append(NormedLinear(dims[i], dims[i + 1], dropout=dropout * (i == 0)))
+        mlp.append(
+            NormedLinear(dims[i], dims[i + 1], act=act, dropout=dropout * (i == 0))
+        )
 
     # TODO this is hot-bodged. come up with a better way
     layer_cls = LAYERS[last_layer.lower()]
